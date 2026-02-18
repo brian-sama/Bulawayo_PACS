@@ -1,0 +1,7 @@
+{
+  "name": "BCC Plan Approval System",
+  "description": "A professional municipal plan approval portal for Bulawayo City Council, featuring client, staff, and admin interfaces with real-time status tracking and digital signing.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
