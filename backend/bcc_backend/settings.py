@@ -89,6 +89,11 @@ DATABASES = {
 
 AUTH_USER_MODEL = 'plans.User'
 
+AUTHENTICATION_BACKENDS = [
+    'plans.auth.EmailOrUsernameModelBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
 # ─────────────────────────────────────────────
 # REST FRAMEWORK
 # ─────────────────────────────────────────────

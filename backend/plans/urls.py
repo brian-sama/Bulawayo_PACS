@@ -11,6 +11,7 @@ router.register(r'properties',   views.PropertyViewSet,    basename='property')
 router.register(r'comments',     views.CommentViewSet,     basename='comment')
 router.register(r'flags',        views.FlagViewSet,        basename='flag')
 router.register(r'audit-logs',   views.AuditLogViewSet,    basename='auditlog')
+router.register(r'department-reviews', views.DepartmentReviewViewSet, basename='departmentreview')
 
 urlpatterns = [
     path('', include(router.urls)),

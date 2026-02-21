@@ -15,7 +15,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['email', 'full_name', 'id_number', 'phone', 'password']
+        fields = ['email', 'full_name', 'id_number', 'phone', 'password', 'user_type', 'professional_reg_no']
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
@@ -57,7 +57,8 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'full_name', 'id_number', 'phone',
-                  'role', 'department', 'department_name', 'is_active', 'created_at']
+                  'role', 'user_type', 'professional_reg_no', 'department', 
+                  'department_name', 'is_active', 'is_email_verified', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
@@ -115,9 +116,11 @@ class CommentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Comment
-        fields = ['id', 'plan_version', 'department', 'department_name',
-                  'author', 'author_name', 'text', 'status_vote',
-                  'is_internal', 'created_at', 'updated_at']
+        fields = [
+            'id', 'plan_version', 'department', 'department_name',
+            'author', 'author_name', 'text', 'status_vote',
+            'pdf_pin_x', 'pdf_pin_y', 'is_internal', 'created_at', 'updated_at'
+        ]
         read_only_fields = ['id', 'author', 'created_at', 'updated_at']
 
     def create(self, validated_data):
@@ -134,7 +137,7 @@ class FlagSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Flag
-        fields = ['id', 'plan', 'plan_version', 'type', 'category', 'message',
+        fields = ['id', 'plan', 'plan_version', 'flag_type', 'category', 'message',
                   'is_resolved', 'resolved_by', 'resolved_by_name', 'resolved_at', 'created_at']
         read_only_fields = ['id', 'created_at']
 
@@ -177,15 +180,20 @@ class ApprovalSerializer(serializers.ModelSerializer):
 
 class PlanListSerializer(serializers.ModelSerializer):
     client_name   = serializers.CharField(source='client.full_name', read_only=True)
-    property_addr = serializers.CharField(source='property.address', read_only=True)
+    stand_addr    = serializers.CharField(source='stand.address', read_only=True)
     architect_name = serializers.CharField(source='architect.full_name', read_only=True)
     flag_count    = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
-        fields = ['id', 'plan_id', 'client', 'client_name', 'property', 'property_addr',
-                  'architect', 'architect_name', 'category', 'status',
-                  'submitted_at', 'created_at', 'updated_at', 'flag_count']
+        fields = [
+            'id', 'plan_id', 'client', 'client_name', 'stand', 'stand_addr',
+            'architect', 'architect_name', 'suburb', 'category', 'status',
+            'is_owner', 'owner_name', 'power_of_attorney',
+            'title_deed', 'structural_cert', 'receipt_scan',
+            'declared_area', 'calculated_area',
+            'submitted_at', 'created_at', 'updated_at', 'flag_count'
+        ]
         read_only_fields = ['id', 'plan_id', 'created_at', 'updated_at']
 
     def get_flag_count(self, obj):

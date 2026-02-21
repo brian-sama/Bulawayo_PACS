@@ -1,49 +1,78 @@
 
-export type UserRole = 'CLIENT' | 'STAFF' | 'ADMIN' | 'EXECUTIVE';
+export type UserRole = 'CLIENT' | 'RECEPTION' | 'DEPT_OFFICER' | 'DEPT_HEAD' | 'FINAL_APPROVER' | 'ADMIN';
+export type UserType = 'OWNER' | 'PROFESSIONAL';
 
 export const PlanStatusValues = {
-  REJECTED: 'REJECTED',
-  CORRECTIONS_REQUIRED: 'CORRECTIONS_REQUIRED',
+  DRAFT: 'DRAFT',
+  SUBMITTED: 'SUBMITTED',
+  PRE_SCREENING: 'PRE_SCREENING',
+  REVIEW_POOL: 'REVIEW_POOL',
   IN_REVIEW: 'IN_REVIEW',
+  CORRECTIONS_REQUIRED: 'CORRECTIONS_REQUIRED',
+  REJECTED: 'REJECTED',
   APPROVED: 'APPROVED',
-  PENDING_PAYMENT: 'PENDING_PAYMENT'
+  REJECTED_PRE_SCREEN: 'REJECTED_PRE_SCREEN'
 };
 
-export type PlanStatus = 'REJECTED' | 'CORRECTIONS_REQUIRED' | 'IN_REVIEW' | 'APPROVED' | 'PENDING_PAYMENT';
+export type PlanStatus = keyof typeof PlanStatusValues;
 
 export interface DepartmentComment {
   id: string;
+  plan_version: number;
   department: string;
+  department_id: number;
   author: string;
+  author_name: string;
   text: string;
-  status: PlanStatus;
-  timestamp: string;
+  status_vote: 'APPROVED' | 'CORRECTIONS_REQUIRED' | 'REJECTED';
+  pdf_pin_x?: number;
+  pdf_pin_y?: number;
+  is_internal: boolean;
+  created_at: string;
 }
 
 export interface Plan {
-  id: string;
-  propertyAddress: string;
-  standNumber: string;
-  category: 'RESIDENTIAL' | 'COMMERCIAL' | 'INDUSTRIAL';
+  id: number;
+  plan_id: string;
+  client: number;
+  client_name: string;
+  stand: number;
+  stand_addr: string;
+  architect: number;
+  architect_name: string;
+  category: 'RESIDENTIAL' | 'COMMERCIAL' | 'INDUSTRIAL' | 'MIXED';
   status: PlanStatus;
+  declared_area?: number;
+  calculated_area?: number;
+  submitted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  flag_count: number;
   progress: number;
   lastUpdate: string;
-  architect: string;
-  owner: string;
-  comments: DepartmentComment[];
 }
 
 export interface Flag {
-  type: 'WARNING' | 'ERROR';
+  id: number;
+  plan: number;
+  flag_type: 'WARNING' | 'ERROR' | 'INFO';
+  category: string;
   message: string;
-  department: string;
+  is_resolved: boolean;
+  created_at: string;
 }
 
 export interface UserProfile {
-  name: string;
+  id: number;
   username: string;
   email: string;
+  full_name: string;
   role: UserRole;
-  idNumber?: string;
+  user_type?: UserType;
+  professional_reg_no?: string;
+  id_number?: string;
+  phone?: string;
+  department?: number;
+  department_name?: string;
 }
 

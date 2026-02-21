@@ -8,14 +8,14 @@ class IsAdmin(BasePermission):
 
 
 class IsStaffOrAbove(BasePermission):
-    ALLOWED = {UserRole.STAFF, UserRole.EXECUTIVE, UserRole.ADMIN}
+    ALLOWED = {UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.FINAL_APPROVER, UserRole.ADMIN}
 
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role in self.ALLOWED
 
 
 class IsReceptionOrAbove(BasePermission):
-    ALLOWED = {UserRole.RECEPTION, UserRole.STAFF, UserRole.EXECUTIVE, UserRole.ADMIN}
+    ALLOWED = {UserRole.RECEPTION, UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.FINAL_APPROVER, UserRole.ADMIN}
 
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role in self.ALLOWED
@@ -28,10 +28,10 @@ class IsClient(BasePermission):
 
 class IsOwnerOrStaff(BasePermission):
     """Object-level: client can only access their own plans."""
-    STAFF_ROLES = {UserRole.RECEPTION, UserRole.STAFF, UserRole.EXECUTIVE, UserRole.ADMIN}
+    STAFF_ROLES = {UserRole.RECEPTION, UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.FINAL_APPROVER, UserRole.ADMIN}
 
     def has_object_permission(self, request, view, obj):
-        if request.user.role in self.STAFF_ROLES:
+        if request.user.is_authenticated and request.user.role in self.STAFF_ROLES:
             return True
         # For Plan objects
         if hasattr(obj, 'client'):

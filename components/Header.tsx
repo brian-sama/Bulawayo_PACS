@@ -8,41 +8,80 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
+  const [showNotifications, setShowNotifications] = React.useState(false);
+  const firstName = (user.full_name || user.username || 'User').split(' ')[0];
+
   return (
-    <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-10">
+    <header className="h-20 bg-white border-b border-slate-100 flex items-center justify-between px-10 sticky top-0 z-10 box-border">
       <div className="flex-1 max-w-xl">
         <div className="relative group">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-600 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-[#003366] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <input
             type="text"
-            placeholder="Search plans, properties, or stand numbers..."
-            className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-transparent rounded-lg text-sm focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-100 outline-none transition"
+            placeholder="Search plans or properties..."
+            className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-transparent rounded-[1rem] text-sm font-medium focus:bg-white focus:border-blue-100 focus:ring-4 focus:ring-blue-50/50 outline-none transition-all"
           />
         </div>
       </div>
 
-      <div className="flex items-center gap-6">
-        <button className="relative p-2 text-slate-500 hover:bg-slate-50 rounded-lg transition" title="Notifications">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-          </svg>
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-        </button>
+      <div className="flex items-center gap-8">
+        {/* Notifications Icon */}
+        <div className="relative">
+          <button
+            onClick={() => setShowNotifications(!showNotifications)}
+            className={`relative p-3 rounded-xl transition-all duration-300 group ${showNotifications ? 'bg-blue-50 text-blue-600' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}
+            title="View Alerts"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            <span className="absolute top-2.5 right-2.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white group-hover:scale-110 transition-transform"></span>
+          </button>
 
-        <div className="flex items-center gap-3 pl-6 border-l border-slate-200">
-          <div className="text-right">
-            <p className="text-sm font-bold text-slate-800">{user.name}</p>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{user.role}</p>
+          {showNotifications && (
+            <div className="absolute right-0 mt-4 w-96 bg-white rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-slate-100 py-4 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+              <div className="px-6 py-2 border-b border-slate-50 flex justify-between items-center mb-2">
+                <h3 className="font-black text-slate-800 text-sm uppercase tracking-widest">Recent Alerts</h3>
+                <span className="text-[10px] bg-red-100 text-red-600 px-2.5 py-1 rounded-full font-black">2 Critical</span>
+              </div>
+              <div className="max-h-80 overflow-y-auto px-2">
+                <div className="p-4 hover:bg-slate-50 rounded-2xl cursor-pointer transition-colors group">
+                  <p className="text-xs text-slate-800 font-bold group-hover:text-blue-600">Plan BCC-2026-RES-0043 requires your signature</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1 uppercase">2 minutes ago</p>
+                </div>
+                <div className="p-4 hover:bg-slate-50 rounded-2xl cursor-pointer transition-colors group">
+                  <p className="text-xs text-slate-800 font-bold group-hover:text-blue-600">Water approval added for Stand #4521</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1 uppercase">1 hour ago</p>
+                </div>
+              </div>
+              <div className="px-6 pt-4 text-center">
+                <button className="text-[10px] font-black text-blue-600 hover:text-blue-800 uppercase tracking-[0.2em] w-full py-3 bg-blue-50 rounded-xl transition-colors">Clear All Notifications</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* User Profile Info */}
+        <div className="flex items-center gap-4 pl-8 border-l border-slate-100 h-10">
+          <div className="text-right hidden sm:block">
+            <p className="text-sm font-black text-[#003366] leading-none mb-1">Welcome, {firstName}</p>
+            <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest leading-none">Bulawayo PACS Network</p>
           </div>
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold shadow-sm">
-            {user.name.charAt(0).toUpperCase()}
+
+          <div className="relative group cursor-pointer">
+            <div className="w-10 h-10 rounded-xl bg-[#F9FAFB] border border-slate-100 flex items-center justify-center text-[#003366] font-black transition-all group-hover:shadow-md group-hover:border-blue-200">
+              {(user.full_name || user.username || '?').charAt(0)}
+            </div>
+
+            {/* Minimal Dropdown on Hover/Click could go here */}
           </div>
+
           <button
             onClick={onLogout}
-            className="ml-2 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition group"
-            title="Logout"
+            className="p-2.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all group"
+            title="Secure Sign Out"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />

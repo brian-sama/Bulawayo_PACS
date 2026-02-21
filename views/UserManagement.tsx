@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ApiUser, ApiDepartment, getUsers, createUser, updateUser, deleteUser, getDepartments } from '../services/api';
+import { ApiUser, ApiDepartment, getUsers, createUser, updateUser, deleteUser, permanentlyDeleteUser, reactivateUser, getDepartments } from '../services/api';
 
 export const UserManagement: React.FC = () => {
     const [users, setUsers] = useState<ApiUser[]>([]);
@@ -71,9 +71,11 @@ export const UserManagement: React.FC = () => {
         setError('');
         try {
             if (editingUser) {
-                // Remove password if empty (don't change it)
-                const submissionData = { ...formData };
-                if (!submissionData.password) delete (submissionData as any).password;
+                // Clean up data before submission
+                const submissionData: any = { ...formData };
+                if (!submissionData.password) delete submissionData.password;
+                if (submissionData.department === "") submissionData.department = null;
+
                 await updateUser(editingUser.id, submissionData);
             } else {
                 await createUser(formData);
@@ -92,6 +94,25 @@ export const UserManagement: React.FC = () => {
             fetchData();
         } catch (err: any) {
             alert(err.message || 'Deactivation failed');
+        }
+    };
+
+    const handleReactivate = async (id: number) => {
+        try {
+            await reactivateUser(id);
+            fetchData();
+        } catch (err: any) {
+            alert(err.message || 'Reactivation failed');
+        }
+    };
+
+    const handleDelete = async (id: number) => {
+        if (!window.confirm('CRITICAL: Are you sure you want to PERMANENTLY DELETE this user? This action cannot be undone.')) return;
+        try {
+            await permanentlyDeleteUser(id);
+            fetchData();
+        } catch (err: any) {
+            alert(err.message || 'Permanent deletion failed');
         }
     };
 
@@ -158,14 +179,27 @@ export const UserManagement: React.FC = () => {
                                     >
                                         Edit
                                     </button>
-                                    {u.is_active && (
+                                    {u.is_active ? (
                                         <button
                                             onClick={() => handleDeactivate(u.id)}
                                             className="text-red-600 hover:text-red-800 font-bold text-sm"
                                         >
                                             Deactivate
                                         </button>
+                                    ) : (
+                                        <button
+                                            onClick={() => handleReactivate(u.id)}
+                                            className="text-green-600 hover:text-green-800 font-bold text-sm"
+                                        >
+                                            Reactivate
+                                        </button>
                                     )}
+                                    <button
+                                        onClick={() => handleDelete(u.id)}
+                                        className="text-red-900 hover:text-red-950 font-black text-sm"
+                                    >
+                                        Delete
+                                    </button>
                                 </td>
                             </tr>
                         ))}
@@ -250,10 +284,12 @@ export const UserManagement: React.FC = () => {
                                         value={formData.role}
                                         onChange={e => setFormData({ ...formData, role: e.target.value })}
                                     >
-                                        <option value="STAFF">Staff</option>
+                                        <option value="ADMIN">System Administrator</option>
+                                        <option value="FINAL_APPROVER">Final Approver</option>
+                                        <option value="DEPT_HEAD">Department Head</option>
+                                        <option value="DEPT_OFFICER">Department Officer</option>
                                         <option value="RECEPTION">Reception</option>
-                                        <option value="ADMIN">Admin</option>
-                                        <option value="EXECUTIVE">Executive</option>
+                                        <option value="CLIENT">Client / Applicant</option>
                                     </select>
                                 </div>
                                 <div className="space-y-1">

@@ -1,31 +1,56 @@
 import React, { useState } from 'react';
-import { UserProfile, UserRole } from '../types';
-import { login } from '../services/api';
+import { UserProfile, UserRole, UserType } from '../types';
+import * as api from '../services/api';
 
 interface LoginViewProps {
     onLogin: (user: UserProfile) => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
+    const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    // Form States
+    const [loginData, setLoginData] = useState({ username: '', password: '' });
+    const [regData, setRegData] = useState({
+        full_name: '',
+        email: '',
+        phone: '',
+        id_number: '',
+        user_type: 'OWNER' as UserType,
+        professional_reg_no: '',
+        password: ''
+    });
+
+    const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
         setLoading(true);
         try {
-            const apiUser = await login(username, password);
-            onLogin({
-                name: apiUser.full_name,
-                username: apiUser.username,
-                email: apiUser.email,
-                role: apiUser.role as UserRole,
+            const apiUser = await api.login(loginData.username, loginData.password);
+            onLogin(apiUser);
+        } catch (err: any) {
+            setError(err.message || 'Login failed');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleRegister = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setError('');
+        setLoading(true);
+        try {
+            await api.apiFetch('/auth/register/', {
+                method: 'POST',
+                body: JSON.stringify(regData)
             });
-        } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+            alert("Account created! Please sign in.");
+            setMode('LOGIN');
+            setLoginData({ username: regData.email, password: regData.password });
+        } catch (err: any) {
+            setError(err.message || 'Registration failed');
         } finally {
             setLoading(false);
         }
@@ -33,69 +58,128 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
 
     return (
         <div className="min-h-screen bg-[#f8fafc] flex flex-col justify-center items-center p-4">
-            <div className="w-full max-w-md bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden">
-                <div className="p-8 space-y-8">
-                    <div className="flex flex-col items-center text-center space-y-6">
-                        <div className="w-24 h-24 bg-[#003366] rounded-3xl flex items-center justify-center shadow-inner overflow-hidden border-4 border-white">
-                            <img src="/logo.png" alt="BCC Logo" className="w-full h-full object-cover" />
+            <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden transition-all duration-500">
+                <div className="p-8 space-y-6">
+                    <div className="flex flex-col items-center text-center">
+                        <div className="w-20 h-20 bg-[#003366] rounded-2xl flex items-center justify-center shadow-lg mb-4">
+                            <img src="/logo.png.png" alt="BCC Logo" className="w-full h-full object-cover rounded-2xl" />
                         </div>
-                        <div>
-                            <h1 className="text-3xl font-extrabold text-[#003366] tracking-tight">
-                                Sign In
-                            </h1>
-                            <p className="text-slate-500 font-medium mt-2">
-                                Bulawayo City Council Portal
-                            </p>
-                        </div>
+                        <h1 className="text-2xl font-black text-[#003366]">{mode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}</h1>
+                        <p className="text-slate-400 text-sm">{mode === 'LOGIN' ? 'Sign in to manage your plans' : 'Register to start your plan submission'}</p>
                     </div>
 
                     {error && (
-                        <div className="bg-red-50 border border-red-200 text-red-700 text-sm font-medium px-4 py-3 rounded-xl">
+                        <div className="bg-red-50 text-red-600 p-4 rounded-xl text-xs font-bold border border-red-100 italic animate-pulse">
                             {error}
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div className="space-y-1.5">
-                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
-                                Username
-                            </label>
+                    {mode === 'LOGIN' ? (
+                        <form onSubmit={handleLogin} className="space-y-4">
                             <input
                                 type="text"
+                                placeholder="Username or Email"
+                                className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
+                                value={loginData.username}
+                                onChange={e => setLoginData({ ...loginData, username: e.target.value })}
                                 required
-                                autoComplete="username"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                placeholder="Enter your username"
-                                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition"
                             />
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
-                                Password
-                            </label>
                             <input
                                 type="password"
+                                placeholder="Password"
+                                className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
+                                value={loginData.password}
+                                onChange={e => setLoginData({ ...loginData, password: e.target.value })}
                                 required
-                                autoComplete="current-password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="••••••••"
-                                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition"
                             />
-                        </div>
+                            <button className="w-full p-4 bg-[#003366] text-white font-bold rounded-xl shadow-lg hover:translate-y-[-1px] transition duration-200">
+                                {loading ? 'Checking...' : 'Sign In'}
+                            </button>
+                        </form>
+                    ) : (
+                        <form onSubmit={handleRegister} className="space-y-3">
+                            <input
+                                type="text"
+                                placeholder="Full Name"
+                                className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={regData.full_name}
+                                onChange={e => setRegData({ ...regData, full_name: e.target.value })}
+                                required
+                            />
+                            <div className="grid grid-cols-2 gap-3">
+                                <input
+                                    type="email"
+                                    placeholder="Email Address"
+                                    className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                    value={regData.email}
+                                    onChange={e => setRegData({ ...regData, email: e.target.value })}
+                                    required
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="Phone Number"
+                                    className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                    value={regData.phone}
+                                    onChange={e => setRegData({ ...regData, phone: e.target.value })}
+                                />
+                            </div>
+                            <input
+                                type="text"
+                                placeholder="ID Number"
+                                className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={regData.id_number}
+                                onChange={e => setRegData({ ...regData, id_number: e.target.value })}
+                                required
+                            />
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Account Type</label>
+                                <select
+                                    title="Account Type"
+                                    className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none"
+                                    value={regData.user_type}
+                                    onChange={e => setRegData({ ...regData, user_type: e.target.value as UserType })}
+                                >
+                                    <option value="OWNER">Property Owner</option>
+                                    <option value="PROFESSIONAL">Architecture/Engineering Professional</option>
+                                </select>
+                            </div>
 
+                            {regData.user_type === 'PROFESSIONAL' && (
+                                <input
+                                    type="text"
+                                    placeholder="Professional Registration Number"
+                                    className="w-full p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                    value={regData.professional_reg_no}
+                                    onChange={e => setRegData({ ...regData, professional_reg_no: e.target.value })}
+                                    required
+                                />
+                            )}
+
+                            <input
+                                type="password"
+                                placeholder="Create Password"
+                                className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={regData.password}
+                                onChange={e => setRegData({ ...regData, password: e.target.value })}
+                                required
+                            />
+                            <button className="w-full p-4 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition">
+                                {loading ? 'Registering...' : 'Create My Account'}
+                            </button>
+                        </form>
+                    )}
+
+                    <div className="pt-4 text-center border-t border-slate-100">
                         <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full py-4 bg-[#003366] text-white font-bold rounded-xl shadow-lg shadow-blue-900/20 hover:bg-[#002a54] active:scale-[0.98] transition-all transform disabled:opacity-60 disabled:cursor-not-allowed"
+                            onClick={() => setMode(mode === 'LOGIN' ? 'REGISTER' : 'LOGIN')}
+                            className="text-xs font-bold text-[#003366] uppercase tracking-widest hover:underline"
                         >
-                            {loading ? 'Signing in…' : 'Sign In'}
+                            {mode === 'LOGIN' ? "Don't have an account? Sign Up" : "Already registered? Sign In"}
                         </button>
-                    </form>
+                    </div>
                 </div>
             </div>
+            <p className="mt-8 text-slate-400 text-[10px] uppercase font-bold tracking-[0.2em]">Bulawayo City Council © 2026</p>
         </div>
     );
 };
