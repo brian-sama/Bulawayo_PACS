@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { Plan, PlanStatus, UserProfile } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
+import * as api from '../services/api';
 
 interface PlanDetailsProps {
     plan: Plan;
@@ -12,11 +13,32 @@ interface PlanDetailsProps {
 export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
     const [isResubmitting, setIsResubmitting] = useState(false);
 
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [resubmitting, setResubmitting] = useState(false);
+
+    const handleSubmitResubmission = async () => {
+        if (!selectedFile) return;
+        setResubmitting(true);
+        try {
+            await api.resubmitPlan(plan.id, selectedFile, "Client resubmission Version 2");
+            alert("Plan resubmitted successfully!");
+            setIsResubmitting(false);
+            onBack(); // Return to dashboard
+        } catch (error) {
+            console.error(error);
+            alert("Failed to resubmit plan.");
+        } finally {
+            setResubmitting(false);
+        }
+    };
+
     const steps = [
         { id: 'RECEPTION', label: 'Reception Validation', status: 'COMPLETE' },
         { id: 'POOL', label: 'Technical Circulation', status: plan.status === 'REVIEW_POOL' || plan.status === 'IN_REVIEW' ? 'ACTIVE' : (plan.status === 'APPROVED' ? 'COMPLETE' : 'PENDING') },
         { id: 'FINAL', label: 'Final Sign-off', status: plan.status === 'APPROVED' ? 'COMPLETE' : (plan.status === 'FINAL_APPROVAL' ? 'ACTIVE' : 'PENDING') }
     ];
+
+    const departmentReviews = (plan as any).department_reviews || [];
 
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -85,13 +107,15 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
 
                             <div className="space-y-4">
                                 <p className="text-sm text-amber-700 leading-relaxed font-medium">BCC Department Officers have noted issues that prevent approval. Please address the following and upload Version 2 below.</p>
-                                <div className="bg-white/80 rounded-2xl p-6 border border-amber-100 shadow-sm">
-                                    <div className="flex items-center gap-3 mb-3">
-                                        <span className="text-[10px] font-black bg-slate-800 text-white px-2 py-0.5 rounded uppercase">Engineering</span>
-                                        <span className="text-[10px] font-bold text-slate-400">Eng. Dube • 2 days ago</span>
+                                {departmentReviews.filter((r: any) => r.comment).map((r: any) => (
+                                    <div key={r.id} className="bg-white/80 rounded-2xl p-6 border border-amber-100 shadow-sm">
+                                        <div className="flex items-center gap-3 mb-3">
+                                            <span className="text-[10px] font-black bg-slate-800 text-white px-2 py-0.5 rounded uppercase">{r.department_name}</span>
+                                            <span className="text-[10px] font-bold text-slate-400">{new Date(r.last_updated).toLocaleDateString()}</span>
+                                        </div>
+                                        <p className="text-sm text-slate-700 font-medium italic">"{r.comment}"</p>
                                     </div>
-                                    <p className="text-sm text-slate-700 font-medium italic">"Foundation depth looks insufficient for this category. Drainage plans need clarification on the eastern corner."</p>
-                                </div>
+                                ))}
                             </div>
 
                             {/* Resubmission UI */}
@@ -106,16 +130,24 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
                                 <div className="space-y-4 animate-in fade-in duration-300">
                                     <div className="p-12 border-2 border-dashed border-amber-300 rounded-3xl flex flex-col items-center justify-center bg-white/50">
                                         <div className="text-3xl mb-4">📂</div>
-                                        <p className="text-sm font-black text-[#003366] uppercase tracking-widest">Select Revised Version 2</p>
+                                        <p className="text-sm font-black text-[#003366] uppercase tracking-widest">{selectedFile ? selectedFile.name : 'Select Revised Version 2'}</p>
                                         <input
                                             type="file"
+                                            accept=".pdf"
+                                            onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
                                             title="Upload revised plan version"
                                             className="mt-4 text-xs"
                                         />
                                     </div>
                                     <div className="flex gap-4">
-                                        <button onClick={() => setIsResubmitting(false)} className="flex-1 p-4 bg-slate-200 rounded-2xl font-black text-slate-500">Cancel</button>
-                                        <button className="flex-2 p-4 bg-green-600 text-white rounded-2xl font-black shadow-lg">Submit Resubmission</button>
+                                        <button onClick={() => { setIsResubmitting(false); setSelectedFile(null); }} className="flex-1 p-4 bg-slate-200 rounded-2xl font-black text-slate-500">Cancel</button>
+                                        <button
+                                            onClick={handleSubmitResubmission}
+                                            disabled={!selectedFile || resubmitting}
+                                            className="flex-2 p-4 bg-green-600 text-white rounded-2xl font-black shadow-lg disabled:opacity-50"
+                                        >
+                                            {resubmitting ? 'Submitting...' : 'Submit Resubmission'}
+                                        </button>
                                     </div>
                                 </div>
                             )}
@@ -134,10 +166,13 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
                                     <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center text-red-600 font-black">PDF</div>
                                     <div>
                                         <p className="text-sm font-black text-slate-700 uppercase">Certified Building Plan</p>
-                                        <p className="text-[10px] font-bold text-slate-400">SIGNED & QR-VERIFIED • {plan.lastUpdate}</p>
+                                        <p className="text-[10px] font-bold text-slate-400">SIGNED & QR-VERIFIED</p>
                                     </div>
                                 </div>
-                                <button className="p-3 bg-blue-600 text-white rounded-xl shadow-lg hover:bg-black transition">
+                                <button
+                                    onClick={() => (plan as any).sealed_document ? window.open((plan as any).sealed_document, '_blank') : alert("Document not ready.")}
+                                    className="p-3 bg-blue-600 text-white rounded-xl shadow-lg hover:bg-black transition"
+                                >
                                     Download Official Copy
                                 </button>
                             </div>

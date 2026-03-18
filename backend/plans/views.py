@@ -1,10 +1,8 @@
 import hashlib
-import hmac
-import qrcode
 import fitz  # PyMuPDF
-import io
 from io import BytesIO
 from django.core.files.base import ContentFile
+from django.http import FileResponse
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import viewsets, generics, status, filters, permissions
@@ -16,7 +14,10 @@ from .models import (
     User, Department, Architect, StandProperty, Plan,
     PlanVersion, Comment, Flag, Receipt, Approval, AuditLog,
     PlanStatus, UserRole, FlagType, FlagCategory,
-    CategoryDepartmentMapping, DepartmentReview, DepartmentReviewStatus
+    CategoryDepartmentMapping, DepartmentReview, DepartmentReviewStatus,
+    ChecklistTemplate, RequiredDocument, SubmittedDocument,
+    ProformaInvoice, ProformaLineItem, PaymentReceipt, ProformaInvoiceStatus,
+    FinalDecision, Notification,
 )
 from .engines import AreaCalculationEngine, AutoFlaggingEngine
 from .serializers import (
@@ -24,10 +25,19 @@ from .serializers import (
     DepartmentSerializer, ArchitectSerializer, StandPropertySerializer,
     PlanListSerializer, PlanDetailSerializer, PlanVersionSerializer,
     CommentSerializer, FlagSerializer, ReceiptSerializer,
-    ApprovalSerializer, AuditLogSerializer
+    ApprovalSerializer, AuditLogSerializer, DepartmentReviewSerializer,
+    ChecklistTemplateSerializer, RequiredDocumentSerializer,
+    SubmittedDocumentSerializer, ProformaInvoiceSerializer,
+    ProformaLineItemSerializer, PaymentReceiptSerializer,
+    FinalDecisionSerializer, NotificationSerializer,
 )
 from .permissions import IsAdmin, IsStaffOrAbove, IsReceptionOrAbove, IsOwnerOrStaff
+from .services.notifications import dispatch_notification
 
+
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
 
 def log_action(user, action, target_model, target_id, old_value=None, new_value=None, request=None):
     ip = None
@@ -38,6 +48,33 @@ def log_action(user, action, target_model, target_id, old_value=None, new_value=
         user=user, action=action, target_model=target_model,
         target_id=target_id, old_value=old_value, new_value=new_value, ip_address=ip
     )
+
+
+def _check_and_advance_to_final_decision(plan):
+    """
+    After a department review is submitted, check if all departments are resolved.
+    If every review is head-confirmed, transition plan to AWAITING_FINAL_DECISION.
+    """
+    reviews = plan.get_current_reviews()
+    if not reviews.exists():
+        return
+
+    all_confirmed = all(
+        r.head_status == DepartmentReviewStatus.HEAD_CONFIRMED
+        for r in reviews
+    )
+    any_rejected = any(
+        r.head_status == DepartmentReviewStatus.HEAD_REJECTED or
+        r.officer_status == DepartmentReviewStatus.OFFICER_REJECTED
+        for r in reviews
+    )
+
+    if any_rejected:
+        plan.status = PlanStatus.REJECTED
+        plan.save(update_fields=['status'])
+    elif all_confirmed:
+        plan.status = PlanStatus.AWAITING_FINAL_DECISION
+        plan.save(update_fields=['status'])
 
 
 # ─────────────────────────────────────────────
@@ -99,8 +136,6 @@ class UserViewSet(viewsets.ModelViewSet):
             request=self.request
         )
 
-        return Response({'detail': f'{user.email} has been deactivated.'}, status=status.HTTP_200_OK)
-
     def destroy(self, request, *args, **kwargs):
         """Soft-delete: deactivate instead of deleting."""
         user = self.get_object()
@@ -129,9 +164,19 @@ class UserViewSet(viewsets.ModelViewSet):
                 {'error': 'You cannot delete your own account.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+        if user.is_superuser:
+            return Response(
+                {'error': 'Superuser accounts cannot be permanently deleted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         email = user.email
-        user.delete()
+        try:
+            user.delete()
+        except Exception as e:
+            return Response(
+                {'error': f'Cannot delete user: {str(e)}. Deactivate instead.'},
+                status=status.HTTP_409_CONFLICT
+            )
         log_action(
             request.user, 'USER_DELETED', 'User', pk,
             old_value={'email': email},
@@ -148,12 +193,10 @@ class UserViewSet(viewsets.ModelViewSet):
                 {'error': 'This account is already active.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        old_active = user.is_active
         user.is_active = True
         user.save()
         log_action(
             request.user, 'USER_REACTIVATED', 'User', user.id,
-            old_value={'is_active': old_active},
             new_value={'is_active': True},
             request=request
         )
@@ -213,7 +256,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
 class PlanViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsOwnerOrStaff]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['plan_id', 'stand__address', 'stand__stand_number']
+    search_fields = ['plan_id', 'plan_number', 'stand__address', 'stand__stand_number']
     ordering_fields = ['created_at', 'status', 'category']
     ordering = ['-created_at']
 
@@ -223,24 +266,28 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         if user.role == UserRole.CLIENT:
             return qs.filter(client=user)
-        
+
         if user.role == UserRole.RECEPTION:
-            # Reception sees plans in SUBMITTED, PRE_SCREENING or REJECTED_PRE_SCREEN
-            return qs.filter(status__in=[PlanStatus.SUBMITTED, PlanStatus.PRE_SCREENING, PlanStatus.REJECTED_PRE_SCREEN])
-        
-        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD]:
-            # Technical staff see plans that HAVE a review record for their department
+            # Reception sees all non-draft, non-approved plans
+            return qs.exclude(status__in=[PlanStatus.APPROVED])
+
+        if user.role == UserRole.DEPT_OFFICER:
             if user.department:
                 return qs.filter(
-                    versions__department_reviews__department=user.department
+                    versions__department_reviews__department=user.department,
                 ).distinct()
             return qs.none()
-            
+
+        if user.role == UserRole.DEPT_HEAD:
+            if user.department:
+                return qs.filter(
+                    versions__department_reviews__department=user.department,
+                ).distinct()
+            return qs.none()
+
         if user.role == UserRole.FINAL_APPROVER:
-            # Final Approver sees plans that are ready for seal (e.g. IN_REVIEW but all depts approved)
-            # We can filter here or let the frontend filter, but backend is safer.
-            return qs.filter(status=PlanStatus.IN_REVIEW)
-            
+            return qs.filter(status=PlanStatus.AWAITING_FINAL_DECISION)
+
         return qs
 
     def get_serializer_class(self):
@@ -249,37 +296,33 @@ class PlanViewSet(viewsets.ModelViewSet):
         return PlanListSerializer
 
     def create(self, request, *args, **kwargs):
-        # 1. Extract and Handle Property (StandProperty)
         stand_number = request.data.get('stand_number')
         suburb = request.data.get('suburb', '')
-        
+
         if not stand_number:
             return Response({'error': 'Stand number is required.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        stand, created = StandProperty.objects.get_or_create(
+
+        stand, _ = StandProperty.objects.get_or_create(
             stand_number=stand_number,
             defaults={'address': f"{stand_number}, {suburb}", 'suburb': suburb}
         )
-        
-        # 2. Prepare Plan Data
+
         data = request.data.copy()
         data['stand'] = stand.id
         data['client'] = request.user.id
-        
-        # 3. Handle Boolean Toggles (from string "true"/"false")
+
         if 'is_owner' in data:
-            data['is_owner'] = data['is_owner'].lower() == 'true'
-            
-        # 4. Serialize and Save
+            data['is_owner'] = str(data['is_owner']).lower() == 'true'
+        if 'is_representative' in data:
+            data['is_representative'] = str(data['is_representative']).lower() == 'true'
+
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         plan = serializer.save(client=request.user)
-        
-        # 5. Handle Architectural Plans (Multiple files)
-        # Frontend sends plan_file_0, plan_file_1...
+
+        # Handle plan files
         plan_files = [v for k, v in request.FILES.items() if k.startswith('plan_file_')]
         if plan_files:
-            # Create the first version with the first file
             version = PlanVersion.objects.create(
                 plan=plan,
                 version_number=1,
@@ -287,36 +330,32 @@ class PlanViewSet(viewsets.ModelViewSet):
                 uploaded_by=request.user,
                 notes="Initial submission"
             )
-            # Log version creation
             log_action(request.user, 'VERSION_ADDED', 'PlanVersion', version.id, request=request)
-            
-        # 6. Parse and Save Shapes (Engine A)
+
+        # Parse shapes for area calculation (Engine A)
         shapes_raw = request.data.get('shapes')
         if shapes_raw:
             try:
                 import json
                 shapes_list = json.loads(shapes_raw)
-                # We can store shapes or run Engine A immediately
                 area_engine = AreaCalculationEngine()
                 result = area_engine.verify_plan_area(float(request.data.get('declared_area', 0)), shapes_list)
-                calc_area = result['calculated_area']
-                plan.calculated_area = calc_area
-                plan.save()
+                plan.calculated_area = result['calculated_area']
+                plan.save(update_fields=['calculated_area'])
             except Exception as e:
                 print(f"Error parsing shapes: {e}")
 
-        # 7. Finalize Status
-        plan.status = PlanStatus.SUBMITTED # Or PRE_SCREENING as per user flow
-        plan.save()
-        
-        log_action(request.user, 'PLAN_SUBMITTED', 'Plan', plan.id,
+        plan.status = PlanStatus.DRAFT
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'PLAN_CREATED', 'Plan', plan.id,
                    new_value={'plan_id': plan.plan_id}, request=request)
-                   
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        return Response(PlanListSerializer(plan, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
-        # Overridden by create() above
-        pass
+        pass  # Overridden by create() above
 
     def perform_update(self, serializer):
         old_status = serializer.instance.status
@@ -326,41 +365,162 @@ class PlanViewSet(viewsets.ModelViewSet):
                        old_value={'status': old_status},
                        new_value={'status': plan.status}, request=self.request)
 
+    # ── Preliminary submission ────────────────────────────────────────────
+
+    @action(detail=True, methods=['post'], permission_classes=[IsOwnerOrStaff])
+    def submit_preliminary(self, request, pk=None):
+        """
+        Client submits plan file(s) for fee calculation only.
+        No plan number assigned at this stage.
+        """
+        plan = self.get_object()
+        if plan.status != PlanStatus.DRAFT:
+            return Response({'error': 'Only DRAFT plans can be submitted as preliminary.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        plan_file = request.FILES.get('plan_file')
+        if not plan_file:
+            return Response({'error': 'A plan file (PDF) is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        last = plan.versions.order_by('-version_number').first()
+        next_num = (last.version_number + 1) if last else 1
+        PlanVersion.objects.create(
+            plan=plan, version_number=next_num,
+            file=plan_file, uploaded_by=request.user,
+            notes='Preliminary submission'
+        )
+
+        old = plan.status
+        plan.status = PlanStatus.PRELIMINARY_SUBMITTED
+        plan.submission_type = 'PRELIMINARY'
+        plan.submitted_at = timezone.now()
+        plan.save(update_fields=['status', 'submission_type', 'submitted_at'])
+
+        log_action(request.user, 'PRELIMINARY_SUBMITTED', 'Plan', plan.id,
+                   old_value={'status': old}, new_value={'status': plan.status},
+                   request=request)
+
+        return Response({'status': plan.status, 'plan_id': plan.plan_id})
+
+    # ── Resubmission ─────────────────────────────────────────────────────
+
+    @action(detail=True, methods=['post'], permission_classes=[IsOwnerOrStaff])
+    def resubmit(self, request, pk=None):
+        """Client uploads a revised plan (creates a new PlanVersion)."""
+        plan = self.get_object()
+        if plan.status not in [PlanStatus.CORRECTIONS_REQUIRED, PlanStatus.REJECTED_PRE_SCREEN]:
+            return Response(
+                {'error': 'Resubmission is only allowed for plans with CORRECTIONS_REQUIRED or REJECTED_PRE_SCREEN status.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        plan_file = request.FILES.get('plan_file')
+        if not plan_file:
+            return Response({'error': 'A plan file is required for resubmission.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        last = plan.versions.order_by('-version_number').first()
+        next_num = (last.version_number + 1) if last else 1
+        notes = request.data.get('notes', f'Version {next_num} resubmission')
+        version = PlanVersion.objects.create(
+            plan=plan, version_number=next_num,
+            file=plan_file, uploaded_by=request.user, notes=notes
+        )
+
+        old = plan.status
+        plan.status = PlanStatus.SUBMITTED
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'PLAN_RESUBMITTED', 'Plan', plan.id,
+                   old_value={'status': old},
+                   new_value={'status': plan.status, 'version': next_num},
+                   request=request)
+
+        return Response(PlanVersionSerializer(version).data, status=status.HTTP_201_CREATED)
+
+    # ── Pre-screen rejection ──────────────────────────────────────────────
+
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def reject_pre_screen(self, request, pk=None):
+        """Reception rejects plan during pre-screening; mandatory reason required."""
+        plan = self.get_object()
+        if plan.status not in [PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED,
+                                PlanStatus.PRELIMINARY_SUBMITTED]:
+            return Response(
+                {'error': 'Plan must be in PRE_SCREENING, SUBMITTED, or PRELIMINARY_SUBMITTED status to reject.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = request.data.get('reason', '').strip()
+        if len(reason) < 10:
+            return Response(
+                {'error': 'A rejection reason of at least 10 characters is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        old = plan.status
+        plan.status = PlanStatus.REJECTED_PRE_SCREEN
+        plan.save(update_fields=['status'])
+
+        Flag.objects.create(
+            plan=plan,
+            flag_type=FlagType.ERROR,
+            category=FlagCategory.OTHER,
+            message=f'Pre-screening rejection: {reason}'
+        )
+
+        log_action(
+            request.user, 'PLAN_REJECTED_PRE_SCREEN', 'Plan', plan.id,
+            old_value={'status': old},
+            new_value={'status': plan.status, 'reason': reason},
+            request=request
+        )
+
+        dispatch_notification(
+            plan.client, 'PLAN_REJECTED',
+            f'Your application {plan.plan_id} has been rejected. Reason: {reason}',
+            subject=f'Application Rejected — {plan.plan_id}'
+        )
+
+        return Response({'status': plan.status, 'reason': reason})
+
+    # ── Submit to Review Pool ─────────────────────────────────────────────
+
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def submit_to_review(self, request, pk=None):
-        """Reception approves plan to enter the review pool."""
+        """
+        Reception verifies final docs and submits plan to the department review pool.
+        Creates DepartmentReview records for all required departments.
+        """
         plan = self.get_object()
-        if plan.status not in [PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED]:
-            return Response({'error': 'Plan must be in PRE_SCREENING or SUBMITTED status.'}, 
-                             status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if there are any unresolved ERROR flags
+        allowed = [PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED,
+                   PlanStatus.VERIFIED_BY_RECEPTION, PlanStatus.FINAL_SUBMITTED]
+        if plan.status not in allowed:
+            return Response({'error': f'Plan must be in one of {allowed} to submit to review.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Block if there are unresolved ERROR flags
         error_flags = plan.flags.filter(flag_type='ERROR', is_resolved=False)
         if error_flags.exists():
-            return Response({'error': 'Cannot submit to review. There are unresolved ERROR flags.',
-                            'flags': list(error_flags.values_list('message', flat=True))},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Cannot submit to review. Unresolved ERROR flags exist.',
+                 'flags': list(error_flags.values_list('message', flat=True))},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         current_version = plan.get_current_version()
         if not current_version:
-             return Response({'error': 'No plan version found to attach reviews to.'}, 
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'No plan version found.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # WORKFLOW ENGINE: Create Department Reviews
-        # 1. Identify required departments based on Category
+        # Determine required departments
         required_mappings = CategoryDepartmentMapping.objects.filter(category=plan.category)
-        
-        target_depts = []
-        if required_mappings.exists():
-            target_depts = [m.department for m in required_mappings]
-        else:
-            # Fallback: All departments marked as 'is_required' globally
-            target_depts = list(Department.objects.filter(is_required=True))
+        target_depts = ([m.department for m in required_mappings]
+                        if required_mappings.exists()
+                        else list(Department.objects.filter(is_required=True)))
 
         created_count = 0
         for dept in target_depts:
-            # Create review record if not exists
-            review, created = DepartmentReview.objects.get_or_create(
+            _, created = DepartmentReview.objects.get_or_create(
                 plan_version=current_version,
                 department=dept,
                 defaults={
@@ -372,106 +532,38 @@ class PlanViewSet(viewsets.ModelViewSet):
                 created_count += 1
 
         old = plan.status
-        plan.status = PlanStatus.IN_REVIEW # Updated from REVIEW_POOL to IN_REVIEW per new spec
-        plan.save()
-        
-        log_action(request.user, 'STATUS_CHANGED', 'Plan', plan.id,
-                   old_value={'status': old}, new_value={'status': plan.status}, request=request)
-                   
+        plan.status = PlanStatus.REVIEW_POOL
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'SUBMITTED_TO_REVIEW', 'Plan', plan.id,
+                   old_value={'status': old}, new_value={'status': plan.status},
+                   request=request)
+
         return Response({
             'status': plan.status,
             'reviews_created': created_count,
             'departments': [d.name for d in target_depts]
         })
 
+    # ── Secure file download ──────────────────────────────────────────────
 
-class DepartmentReviewViewSet(viewsets.ModelViewSet):
-    """
-    Handles Officer and Head reviews for specific departments.
-    """
-    # queryset = DepartmentReview.objects.all() # We'll define distinct querysets per action or role
-    serializer_class = PlanDetailSerializer # Placeholder, we need a specific serializer usually
-    permission_classes = [IsAuthenticated]
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def download_file(self, request, pk=None):
+        """Authenticated, secure download of the current plan version file."""
+        plan = self.get_object()
+        current_version = plan.get_current_version()
+        if not current_version or not current_version.file:
+            return Response({'error': 'No file found for this plan.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            file_handle = open(current_version.file.path, 'rb')
+            response = FileResponse(file_handle, content_type='application/pdf')
+            filename = f'{plan.plan_id}_v{current_version.version_number}.pdf'
+            response['Content-Disposition'] = f'inline; filename="{filename}"'
+            return response
+        except FileNotFoundError:
+            return Response({'error': 'File not found on server.'}, status=status.HTTP_404_NOT_FOUND)
 
-    def get_queryset(self):
-        # Users should only see reviews relevant to their department
-        user = self.request.user
-        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD] and user.department:
-            return DepartmentReview.objects.filter(department=user.department)
-        if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER, UserRole.RECEPTION]:
-            return DepartmentReview.objects.all()
-        return DepartmentReview.objects.none()
-
-    @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
-    def evaluate(self, request, pk=None):
-        """
-        Generic endpoint for Officer or Head to submit their evaluation.
-        Payload: { "role": "OFFICER"|"HEAD", "status": "APPROVED"|"REJECTED"|"CORRECTIONS", "comment": "..." }
-        """
-        review = self.get_object()
-        user = request.user
-        
-        # Security check: Ensure user belongs to this department (unless Admin)
-        if user.role != UserRole.ADMIN and user.department != review.department:
-             return Response({'error': 'You do not belong to this department.'}, status=403)
-
-        role = request.data.get('role') # OFFICER or HEAD
-        decision = request.data.get('status')
-        comment = request.data.get('comment', '')
-
-        if role == 'OFFICER':
-            if user.role not in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.ADMIN]:
-                 return Response({'error': 'Role mismatch.'}, status=403)
-            
-            # Map frontend basic status to internal enum
-            status_map = {
-                'APPROVED': DepartmentReviewStatus.OFFICER_APPROVED,
-                'REJECTED': DepartmentReviewStatus.OFFICER_REJECTED,
-                'CORRECTIONS': DepartmentReviewStatus.OFFICER_CORRECTIONS
-            }
-            if decision not in status_map:
-                 return Response({'error': 'Invalid status.'}, status=400)
-
-            review.officer = user
-            review.officer_status = status_map[decision]
-            review.officer_comment = comment
-            review.officer_acted_at = timezone.now()
-            review.save()
-
-        elif role == 'HEAD':
-            if user.role not in [UserRole.DEPT_HEAD, UserRole.ADMIN]:
-                 return Response({'error': 'Only Department Head can perform this action.'}, status=403)
-
-            status_map = {
-                'APPROVED': DepartmentReviewStatus.HEAD_CONFIRMED,
-                'REJECTED': DepartmentReviewStatus.HEAD_REJECTED
-            }
-            if decision not in status_map:
-                 return Response({'error': 'Invalid status. Head can only Confirm or Reject.'}, status=400)
-
-            review.head = user
-            review.head_status = status_map[decision]
-            review.head_comment = comment
-            review.head_acted_at = timezone.now()
-            review.save()
-            
-        else:
-            return Response({'error': 'Invalid role specified.'}, status=400)
-            
-        # Trigger Global Status Update
-        plan = review.plan_version.plan
-        old_global = plan.status
-        plan.get_global_status() # This just returns color, we need to apply it.
-        # Check current global status
-        color, new_global_status = plan.get_global_status()
-        
-        if plan.status != new_global_status:
-            plan.status = new_global_status
-            plan.save()
-            log_action(user, 'GLOBAL_STATUS_UPDATE', 'Plan', plan.id, 
-                       old_value={'status': old_global}, new_value={'status': plan.status})
-
-        return Response({'status': 'Success', 'review_status': review.officer_status if role=='OFFICER' else review.head_status})
+    # ── Auto-checks ───────────────────────────────────────────────────────
 
     @action(detail=True, methods=['post'], permission_classes=[IsOwnerOrStaff])
     def run_auto_checks(self, request, pk=None):
@@ -479,12 +571,11 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
         plan = self.get_object()
         engine = AutoFlaggingEngine()
         suggested_flags = engine.run_pre_screening(plan)
-        
+
         flags_created = []
         for f_data in suggested_flags:
-            # Check if an identical unresolved flag already exists
-            if not Flag.objects.filter(plan=plan, category=f_data['category'], 
-                                     message=f_data['message'], is_resolved=False).exists():
+            if not Flag.objects.filter(plan=plan, category=f_data['category'],
+                                       message=f_data['message'], is_resolved=False).exists():
                 flag = Flag.objects.create(
                     plan=plan,
                     flag_type=f_data['flag_type'],
@@ -492,7 +583,7 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
                     message=f_data['message']
                 )
                 flags_created.append(FlagSerializer(flag).data)
-        
+
         return Response({
             'detail': f'Auto-checks completed. {len(flags_created)} new flags raised.',
             'new_flags': flags_created
@@ -500,160 +591,226 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def verify_area(self, request, pk=None):
-        """Engine A: Calculate area from shapes and verify against declared area."""
         plan = self.get_object()
         declared_area = request.data.get('declared_area')
         shapes = request.data.get('shapes', [])
-        
         if declared_area is None:
             return Response({'error': 'declared_area is required.'}, status=400)
-        
+
         engine = AreaCalculationEngine()
         result = engine.verify_plan_area(float(declared_area), shapes)
-        
-        # Save results to plan
         plan.declared_area = result['declared_area']
         plan.calculated_area = result['calculated_area']
-        plan.save()
-        
-        # Auto-raise flag if mismatch
+        plan.save(update_fields=['declared_area', 'calculated_area'])
+
         if result['flag_triggered']:
             Flag.objects.get_or_create(
-                plan=plan,
-                category=FlagCategory.AREA_MISMATCH,
-                is_resolved=False,
-                defaults={
-                    'flag_type': FlagType.ERROR,
-                    'message': result['message']
-                }
+                plan=plan, category=FlagCategory.AREA_MISMATCH, is_resolved=False,
+                defaults={'flag_type': FlagType.ERROR, 'message': result['message']}
             )
-            
         return Response(result)
 
-    @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
-    def compute_status(self, request, pk=None):
-        """Force re-calculation of global status based on Department Reviews."""
-        plan = self.get_object()
-        current_version = plan.get_current_version()
-        if not current_version:
-             return Response({'error': 'No plan version found.'}, status=400)
-
-        # Use the central logic in models.py
-        color, new_status = plan.get_global_status()
-        
-        old_status = plan.status
-        if old_status != new_status:
-            plan.status = new_status
-            plan.save()
-            log_action(request.user, 'STATUS_COMPUTED', 'Plan', plan.id,
-                    old_value={'status': old_status},
-                    new_value={'status': plan.status}, request=request)
-        
-        return Response({'status': plan.status, 'color': color})
+    # ── Final approval (PDF stamping) ─────────────────────────────────────
 
     @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
     def approve_final(self, request, pk=None):
-        """Apply final approval and lock the plan."""
+        """Apply final approval and lock the plan (PDF stamp + QR code)."""
         plan = self.get_object()
-        
-        # 1. Verification Checklist
-        if request.user.role != UserRole.FINAL_APPROVER and request.user.role != UserRole.ADMIN:
-            return Response({'error': 'Only the Final Approver or Admin can seal a plan.'}, 
+
+        if request.user.role not in [UserRole.FINAL_APPROVER, UserRole.ADMIN]:
+            return Response({'error': 'Only the Final Approver or Admin can seal a plan.'},
                             status=status.HTTP_403_FORBIDDEN)
+
+        if plan.status != PlanStatus.AWAITING_FINAL_DECISION:
+            return Response({'error': 'Plan must be in AWAITING_FINAL_DECISION status.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         current_version = plan.get_current_version()
         if not current_version:
             return Response({'error': 'No plan version found.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Check Secondary Signing Password
+        # Check signing password
         signing_password = request.data.get('signing_password')
         if not signing_password or not request.user.check_signing_password(signing_password):
             return Response({'error': 'Invalid signing password.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        # 3. Ensure all required departments have voted APPROVED
-        required_depts = Department.objects.filter(is_required=True)
-        approved_dept_ids = set(
-            Comment.objects.filter(
-                plan_version=current_version,
-                status_vote='APPROVED'
-            ).values_list('department_id', flat=True)
-        )
-        missing = required_depts.exclude(id__in=approved_dept_ids)
-        if missing.exists():
+        # Verify all department heads have confirmed — uses DepartmentReview, NOT Comment votes
+        required_reviews = DepartmentReview.objects.filter(plan_version=current_version)
+        if not required_reviews.exists():
+            return Response({'error': 'No department reviews found for current version.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        unconfirmed = required_reviews.exclude(head_status=DepartmentReviewStatus.HEAD_CONFIRMED)
+        if unconfirmed.exists():
             return Response({
-                'error': 'Not all required departments have approved.',
-                'missing': list(missing.values_list('name', flat=True))
+                'error': 'Not all department heads have confirmed approval.',
+                'pending': list(unconfirmed.values_list('department__name', flat=True))
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # 4. Generate Cryptographic Signature Hash
-        timestamp = timezone.now()
-        hash_input = f'{plan.plan_id}:{current_version.id}:{request.user.id}:{timestamp.isoformat()}'
+        # Generate cryptographic hash
+        ts = timezone.now()
+        hash_input = f'{plan.plan_id}:{current_version.id}:{request.user.id}:{ts.isoformat()}'
         sig_hash = hashlib.sha256(hash_input.encode()).hexdigest()
 
-        # 5. Create Approval Record
         approval = Approval(
-            plan=plan,
-            approved_by=request.user,
+            plan=plan, approved_by=request.user,
             signature_hash=sig_hash,
             notes=request.data.get('notes', ''),
-            timestamp=timestamp
         )
 
-        # 6. Apply Executive Seal to PDF
-        current_version = plan.get_current_version()
-        if current_version and current_version.file:
+        # PDF stamping
+        if current_version.file:
             try:
-                # Open the existing PDF from storage
-                # Generate QR Code
                 import qrcode
                 from datetime import datetime
                 qr = qrcode.QRCode(version=1, box_size=10, border=5)
                 qr.add_data(f"BCC APPROVED: {plan.plan_id} | {datetime.now().date()}")
                 qr.make(fit=True)
                 img = qr.make_image(fill_color="black", back_color="white")
-                
-                input_path = current_version.file.path
-                doc = fitz.open(input_path)
+
+                doc = fitz.open(current_version.file.path)
                 page = doc[0]
-                
-                # Stamp coordinates
                 page_width = page.rect.width
                 rect = fitz.Rect(page_width - 150, 50, page_width - 50, 150)
-                
-                # Insert Image
+
                 buffer = BytesIO()
                 img.save(buffer, format='PNG')
                 page.insert_image(rect, stream=buffer.getvalue())
-                
-                # Red Text Stamp
+
                 text_point = fitz.Point(page_width - 165, 165)
-                stamp_text = f"BCC APPROVED: {plan.plan_id}"
-                page.insert_text(text_point, stamp_text, fontsize=12, color=(1, 0, 0), fontname="helv", bold=True)
-                
-                # Save to a new buffer and then back to approval model
+                page.insert_text(text_point, f"BCC APPROVED: {plan.plan_id}",
+                                 fontsize=12, color=(1, 0, 0), fontname="helv", bold=True)
+
                 out_buffer = BytesIO()
                 doc.save(out_buffer, garbage=4, deflate=True)
                 doc.close()
-                
+
                 final_pdf = ContentFile(out_buffer.getvalue(), name=f'APPROVED_{plan.plan_id}.pdf')
-                # Optional: We could save this to a new field in Approval or replace the original
-                # For now, let's store it as the 'sealed_document' in the approval record
                 approval.qr_code.save(f'qr_{plan.plan_id}.png', ContentFile(buffer.getvalue()), save=False)
                 approval.sealed_document = final_pdf
-                approval.save()
             except Exception as e:
-                log_action(request.user, 'STAMPING_FAILED', 'Plan', plan.id, new_value={'error': str(e)}, request=request)
-                # Fallback to just saving the approval record without stamping if it fails
-                approval.save()
+                log_action(request.user, 'STAMPING_FAILED', 'Plan', plan.id,
+                           new_value={'error': str(e)}, request=request)
 
-        # 7. Finalize Plan Status
+        approval.save()
         plan.status = PlanStatus.APPROVED
-        plan.save()
+        plan.save(update_fields=['status'])
 
         log_action(request.user, 'PLAN_APPROVED', 'Plan', plan.id,
                    new_value={'signature_hash': sig_hash}, request=request)
-        
+
+        dispatch_notification(
+            plan.client, 'FINAL_DECISION',
+            f'Congratulations! Your application {plan.plan_id} has been APPROVED.',
+            subject=f'Final Approval Granted — {plan.plan_id}'
+        )
+
         return Response(ApprovalSerializer(approval).data)
+
+
+# ─────────────────────────────────────────────
+# DEPARTMENT REVIEW
+# ─────────────────────────────────────────────
+
+class DepartmentReviewViewSet(viewsets.ModelViewSet):
+    """Handles Officer and Head reviews for specific departments."""
+    serializer_class = DepartmentReviewSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD] and user.department:
+            return DepartmentReview.objects.filter(
+                department=user.department
+            ).select_related('plan_version__plan', 'department', 'officer', 'head')
+        if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER, UserRole.RECEPTION]:
+            return DepartmentReview.objects.all().select_related(
+                'plan_version__plan', 'department', 'officer', 'head'
+            )
+        return DepartmentReview.objects.none()
+
+    @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
+    def evaluate(self, request, pk=None):
+        """
+        Officer or Head submits their evaluation.
+        Payload: { "role": "OFFICER"|"HEAD", "status": "APPROVED"|"REJECTED"|"CORRECTIONS", "comment": "..." }
+        Rejection and Corrections require a comment of at least 10 characters.
+        """
+        review = self.get_object()
+        user = request.user
+
+        # Security: must belong to this department (unless Admin)
+        if user.role != UserRole.ADMIN and user.department != review.department:
+            return Response({'error': 'You do not belong to this department.'}, status=403)
+
+        role     = request.data.get('role')
+        decision = request.data.get('status', '').upper()
+        comment  = request.data.get('comment', '').strip()
+
+        # Enforce mandatory comment for rejection / corrections
+        if decision in ('REJECTED', 'CORRECTIONS') and len(comment) < 10:
+            return Response(
+                {'error': 'A reason of at least 10 characters is required when rejecting or requesting corrections.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if role == 'OFFICER':
+            if user.role not in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.ADMIN]:
+                return Response({'error': 'Role mismatch.'}, status=403)
+
+            status_map = {
+                'APPROVED':    DepartmentReviewStatus.OFFICER_APPROVED,
+                'REJECTED':    DepartmentReviewStatus.OFFICER_REJECTED,
+                'CORRECTIONS': DepartmentReviewStatus.OFFICER_CORRECTIONS,
+            }
+            if decision not in status_map:
+                return Response({'error': f'Invalid status. Valid options: {list(status_map.keys())}'}, status=400)
+
+            review.officer         = user
+            review.officer_status  = status_map[decision]
+            review.officer_comment = comment
+            review.officer_acted_at = timezone.now()
+            review.save()
+
+        elif role == 'HEAD':
+            if user.role not in [UserRole.DEPT_HEAD, UserRole.ADMIN]:
+                return Response({'error': 'Only Department Head can perform this action.'}, status=403)
+
+            status_map = {
+                'APPROVED': DepartmentReviewStatus.HEAD_CONFIRMED,
+                'REJECTED': DepartmentReviewStatus.HEAD_REJECTED,
+            }
+            if decision not in status_map:
+                return Response({'error': 'Invalid status. Head can only APPROVED or REJECTED.'}, status=400)
+
+            review.head         = user
+            review.head_status  = status_map[decision]
+            review.head_comment = comment
+            review.head_acted_at = timezone.now()
+            review.save()
+
+        else:
+            return Response({'error': 'Invalid role. Must be OFFICER or HEAD.'}, status=400)
+
+        # Log to audit trail
+        plan = review.plan_version.plan
+        log_action(user, f'DEPT_REVIEW_{role}_{decision}', 'DepartmentReview', review.id,
+                   new_value={'decision': decision, 'comment': comment}, request=request)
+
+        # Notify applicant
+        dispatch_notification(
+            plan.client, 'DEPT_DECISION',
+            f'{review.department.name} has submitted a review on your application {plan.plan_id}: {decision}.',
+            subject=f'Department Decision — {plan.plan_id}'
+        )
+
+        # Check if all departments are resolved and advance plan status
+        _check_and_advance_to_final_decision(plan)
+
+        return Response({
+            'status': 'Success',
+            'review_status': review.officer_status if role == 'OFFICER' else review.head_status
+        })
 
 
 # ─────────────────────────────────────────────
@@ -667,18 +824,15 @@ class CommentViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Comment.objects.select_related('department', 'author', 'plan_version')
+
+        # Filter by plan_version if provided in query params
+        version_id = self.request.query_params.get('plan_version')
+        if version_id:
+            qs = qs.filter(plan_version_id=version_id)
+
         if user.role == UserRole.CLIENT:
-            # Clients only see non-internal comments on their own plans
-            return qs.filter(
-                plan_version__plan__client=user,
-                is_internal=False
-            )
-        
-        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD]:
-            # Staff see comments for plans they have access to
-            # But they should probably see ALL comments for those plans (Round Table)
-            return qs.filter(plan_version__plan__in=PlanViewSet().get_queryset(self.request))
-            
+            return qs.filter(plan_version__plan__client=user, is_internal=False)
+
         return qs
 
     def get_permissions(self):
@@ -714,6 +868,358 @@ class FlagViewSet(viewsets.ModelViewSet):
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.select_related('user').order_by('-timestamp')
     serializer_class = AuditLogSerializer
-    permission_classes = [IsAdmin]
-    filter_backends = [filters.SearchFilter]
+    permission_classes = [IsStaffOrAbove]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['action', 'target_model', 'user__full_name']
+
+
+# ─────────────────────────────────────────────
+# CHECKLIST TEMPLATES
+# ─────────────────────────────────────────────
+
+class ChecklistTemplateViewSet(viewsets.ModelViewSet):
+    queryset = ChecklistTemplate.objects.prefetch_related('required_documents').all()
+    serializer_class = ChecklistTemplateSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated()]
+        return [IsAdmin()]
+
+
+# ─────────────────────────────────────────────
+# SUBMITTED DOCUMENTS
+# ─────────────────────────────────────────────
+
+class SubmittedDocumentViewSet(viewsets.ModelViewSet):
+    serializer_class = SubmittedDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['label', 'plan__plan_id']
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SubmittedDocument.objects.select_related('plan', 'required_doc', 'uploaded_by', 'verified_by')
+
+        plan_id = self.request.query_params.get('plan')
+        if plan_id:
+            qs = qs.filter(plan_id=plan_id)
+
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        return qs
+
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def verify(self, request, pk=None):
+        """
+        Receptionist marks a submitted document as verified.
+        When ALL required (non-optional) documents for the plan are verified,
+        automatically assigns the plan number and moves the plan to REVIEW_POOL.
+        """
+        doc = self.get_object()
+        comment = request.data.get('comment', '').strip()
+
+        doc.is_verified  = True
+        doc.verified_by  = request.user
+        doc.verified_at  = timezone.now()
+        doc.comment      = comment
+        doc.save()
+
+        log_action(request.user, 'DOCUMENT_VERIFIED', 'SubmittedDocument', doc.id,
+                   new_value={'label': doc.label, 'comment': comment}, request=request)
+
+        # Check if all required documents for this plan are now verified
+        plan = doc.plan
+        all_docs = plan.submitted_documents.all()
+        required_docs = all_docs.filter(required_doc__is_optional=False)
+        unverified = required_docs.filter(is_verified=False)
+
+        if not unverified.exists() and required_docs.exists():
+            old = plan.status
+            plan.status = PlanStatus.VERIFIED_BY_RECEPTION
+            plan.save(update_fields=['status'])
+
+            # Assign the official plan number
+            plan_number = plan.assign_plan_number()
+
+            log_action(request.user, 'PLAN_NUMBER_ASSIGNED', 'Plan', plan.id,
+                       old_value={'status': old},
+                       new_value={'status': plan.status, 'plan_number': plan_number},
+                       request=request)
+
+            dispatch_notification(
+                plan.client, 'PLAN_NUMBER_ASSIGNED',
+                f'Your application has been verified. Your official plan number is {plan_number}.',
+                subject=f'Plan Number Assigned — {plan_number}'
+            )
+
+            # Advance to FINAL_SUBMITTED → then submit_to_review will take it to REVIEW_POOL
+            plan.status = PlanStatus.FINAL_SUBMITTED
+            plan.save(update_fields=['status'])
+
+        return Response(SubmittedDocumentSerializer(doc, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def reject_document(self, request, pk=None):
+        """Receptionist rejects a document and requests re-upload from applicant."""
+        doc = self.get_object()
+        reason = request.data.get('reason', '').strip()
+        if len(reason) < 10:
+            return Response({'error': 'A rejection reason of at least 10 characters is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        doc.is_verified = False
+        doc.comment = f'REJECTED: {reason}'
+        doc.save(update_fields=['is_verified', 'comment'])
+
+        log_action(request.user, 'DOCUMENT_REJECTED', 'SubmittedDocument', doc.id,
+                   new_value={'reason': reason}, request=request)
+
+        dispatch_notification(
+            doc.plan.client, 'DOCUMENTS_REQUESTED',
+            f'Document "{doc.label}" was rejected for your application {doc.plan.plan_id}. Reason: {reason}. Please re-upload.',
+            subject=f'Document Re-upload Required — {doc.plan.plan_id}'
+        )
+
+        return Response({'detail': 'Document rejected. Applicant notified.'})
+
+
+# ─────────────────────────────────────────────
+# PROFORMA INVOICE
+# ─────────────────────────────────────────────
+
+class ProformaInvoiceViewSet(viewsets.ModelViewSet):
+    serializer_class = ProformaInvoiceSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['invoice_number', 'plan__plan_id']
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = ProformaInvoice.objects.select_related('plan', 'issued_by').prefetch_related(
+            'line_items', 'payment_receipts'
+        )
+        plan_id = self.request.query_params.get('plan')
+        if plan_id:
+            qs = qs.filter(plan_id=plan_id)
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        return qs
+
+    def get_permissions(self):
+        if self.action in ['create', 'update', 'partial_update', 'destroy', 'confirm_payment']:
+            return [IsReceptionOrAbove()]
+        return [IsAuthenticated()]
+
+    def create(self, request, *args, **kwargs):
+        plan_id = request.data.get('plan')
+        if not plan_id:
+            return Response({'error': 'plan field is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            plan = Plan.objects.get(pk=plan_id)
+        except Plan.DoesNotExist:
+            return Response({'error': 'Plan not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if plan.status not in [PlanStatus.PRELIMINARY_SUBMITTED, PlanStatus.SUBMITTED]:
+            return Response(
+                {'error': 'Proforma can only be issued for PRELIMINARY_SUBMITTED or SUBMITTED plans.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        invoice = ProformaInvoice.objects.create(
+            plan=plan,
+            issued_by=request.user,
+            notes=request.data.get('notes', ''),
+        )
+
+        # Create line items
+        line_items_data = request.data.get('line_items', [])
+        for item in line_items_data:
+            ProformaLineItem.objects.create(
+                invoice=invoice,
+                label=item.get('label', ''),
+                vote_no=item.get('vote_no', ''),
+                amount_zwl=item.get('amount_zwl', 0),
+                amount_usd=item.get('amount_usd', 0),
+                is_rates_payment=item.get('is_rates_payment', False),
+            )
+
+        invoice.recalculate_totals()
+
+        old = plan.status
+        plan.status = PlanStatus.PROFORMA_ISSUED
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'PROFORMA_ISSUED', 'ProformaInvoice', invoice.id,
+                   new_value={'invoice_number': invoice.invoice_number, 'plan_id': plan.plan_id},
+                   request=request)
+
+        dispatch_notification(
+            plan.client, 'PROFORMA_ISSUED',
+            f'Proforma invoice {invoice.invoice_number} has been issued for your application {plan.plan_id}. '
+            f'Total: ZWL {invoice.total_zwl} / USD {invoice.total_usd}. Please pay and upload your receipt.',
+            subject=f'Proforma Invoice Issued — {invoice.invoice_number}'
+        )
+
+        return Response(
+            ProformaInvoiceSerializer(invoice, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def confirm_payment(self, request, pk=None):
+        """
+        Receptionist confirms payment by recording the receipt number.
+        receipt_number must be unique across all PaymentReceipt records.
+        """
+        invoice = self.get_object()
+
+        receipt_number = request.data.get('receipt_number', '').strip()
+        if not receipt_number:
+            return Response({'error': 'receipt_number is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if PaymentReceipt.objects.filter(receipt_number=receipt_number).exists():
+            return Response({'error': f'Receipt number "{receipt_number}" has already been recorded.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        payment_date = request.data.get('payment_date')
+        if not payment_date:
+            return Response({'error': 'payment_date is required (YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        receipt = PaymentReceipt.objects.create(
+            invoice=invoice,
+            receipt_number=receipt_number,
+            amount_zwl=request.data.get('amount_zwl', invoice.total_zwl),
+            amount_usd=request.data.get('amount_usd', invoice.total_usd),
+            paid_by=invoice.plan.client,
+            payment_date=payment_date,
+            payment_method=request.data.get('payment_method', ''),
+            evidence_file=request.FILES.get('evidence_file'),
+            recorded_by=request.user,
+        )
+
+        invoice.status = ProformaInvoiceStatus.PAID
+        invoice.save(update_fields=['status'])
+
+        plan = invoice.plan
+        old = plan.status
+        plan.status = PlanStatus.PAID
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'PAYMENT_CONFIRMED', 'PaymentReceipt', receipt.id,
+                   new_value={'receipt_number': receipt_number, 'plan_id': plan.plan_id},
+                   request=request)
+
+        dispatch_notification(
+            plan.client, 'PAYMENT_CONFIRMED',
+            f'Payment for {plan.plan_id} (Receipt #{receipt_number}) has been confirmed. '
+            f'Your documents will now be verified.',
+            subject=f'Payment Confirmed for {plan.plan_id}'
+        )
+
+        return Response(PaymentReceiptSerializer(receipt, context={'request': request}).data)
+
+
+# ─────────────────────────────────────────────
+# FINAL DECISION
+# ─────────────────────────────────────────────
+
+class FinalDecisionViewSet(viewsets.ModelViewSet):
+    serializer_class = FinalDecisionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = FinalDecision.objects.select_related('plan', 'final_approver')
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        return qs
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [IsStaffOrAbove()]
+        return [IsAuthenticated()]
+
+    def create(self, request, *args, **kwargs):
+        if request.user.role not in [UserRole.FINAL_APPROVER, UserRole.ADMIN]:
+            return Response({'error': 'Only Final Approver or Admin can submit a final decision.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        plan_id  = request.data.get('plan')
+        decision = request.data.get('decision', '').upper()
+        reason   = request.data.get('reason', '').strip()
+
+        if decision not in ('APPROVED', 'REJECTED'):
+            return Response({'error': 'decision must be APPROVED or REJECTED.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(reason) < 10:
+            return Response({'error': 'A reason of at least 10 characters is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            plan = Plan.objects.get(pk=plan_id)
+        except Plan.DoesNotExist:
+            return Response({'error': 'Plan not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if plan.status != PlanStatus.AWAITING_FINAL_DECISION:
+            return Response({'error': 'Plan must be in AWAITING_FINAL_DECISION status.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        if hasattr(plan, 'final_decision'):
+            return Response({'error': 'A final decision has already been made for this plan.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        fd = FinalDecision.objects.create(
+            plan=plan, final_approver=request.user,
+            decision=decision, reason=reason
+        )
+
+        old = plan.status
+        plan.status = PlanStatus.APPROVED if decision == 'APPROVED' else PlanStatus.REJECTED
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, f'FINAL_{decision}', 'FinalDecision', fd.id,
+                   old_value={'status': old},
+                   new_value={'status': plan.status, 'reason': reason},
+                   request=request)
+
+        msg = (f'Your application {plan.plan_id} has been APPROVED by the final authority. '
+               if decision == 'APPROVED'
+               else f'Your application {plan.plan_id} has been REJECTED. Reason: {reason}')
+
+        dispatch_notification(
+            plan.client, 'FINAL_DECISION', msg,
+            subject=f'Final Decision — {plan.plan_id}'
+        )
+
+        return Response(FinalDecisionSerializer(fd, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────
+# NOTIFICATIONS
+# ─────────────────────────────────────────────
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Notification.objects.filter(recipient=self.request.user).order_by('-sent_at')
+
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        notif = self.get_object()
+        if not notif.is_read:
+            notif.is_read = True
+            notif.read_at = timezone.now()
+            notif.save(update_fields=['is_read', 'read_at'])
+        return Response(NotificationSerializer(notif).data)
+
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        count = Notification.objects.filter(
+            recipient=request.user, is_read=False
+        ).update(is_read=True, read_at=timezone.now())
+        return Response({'marked_read': count})

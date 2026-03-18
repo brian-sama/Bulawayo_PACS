@@ -27,13 +27,25 @@ class IsClient(BasePermission):
 
 
 class IsOwnerOrStaff(BasePermission):
-    """Object-level: client can only access their own plans."""
+    """
+    Object-level: staff can access everything, clients only their own data.
+    """
     STAFF_ROLES = {UserRole.RECEPTION, UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.FINAL_APPROVER, UserRole.ADMIN}
 
+    def has_permission(self, request, view):
+        return request.user and request.user.is_authenticated
+
     def has_object_permission(self, request, view, obj):
-        if request.user.is_authenticated and request.user.role in self.STAFF_ROLES:
+        user = request.user
+        if user.role in self.STAFF_ROLES:
             return True
-        # For Plan objects
+        
+        # Check Plan ownership
         if hasattr(obj, 'client'):
-            return obj.client == request.user
+            return obj.client == user
+        
+        # Check PlanVersion ownership (via plan)
+        if hasattr(obj, 'plan'):
+            return getattr(obj.plan, 'client', None) == user
+            
         return False

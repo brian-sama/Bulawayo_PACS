@@ -4,9 +4,11 @@ import * as api from '../services/api';
 
 interface LoginViewProps {
     onLogin: (user: UserProfile) => void;
+    onBack?: () => void;
 }
 
-export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
+export const LoginView: React.FC<LoginViewProps> = (props) => {
+    const { onLogin, onBack } = props;
     const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -57,12 +59,21 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
     };
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] flex flex-col justify-center items-center p-4">
+        <div className="min-h-screen bg-[#f8fafc] flex flex-col justify-center items-center p-4 relative">
+            {onBack && (
+                <button 
+                    onClick={onBack}
+                    className="absolute top-8 left-8 flex items-center gap-2 text-slate-400 hover:text-[#003366] font-bold text-xs uppercase tracking-widest transition"
+                >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                    Back to Home
+                </button>
+            )}
             <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden transition-all duration-500">
                 <div className="p-8 space-y-6">
                     <div className="flex flex-col items-center text-center">
                         <div className="w-20 h-20 bg-[#003366] rounded-2xl flex items-center justify-center shadow-lg mb-4">
-                            <img src="/logo.png.png" alt="BCC Logo" className="w-full h-full object-cover rounded-2xl" />
+                            <img src="/logo.png" alt="BCC Logo" className="w-full h-full object-cover rounded-2xl" />
                         </div>
                         <h1 className="text-2xl font-black text-[#003366]">{mode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}</h1>
                         <p className="text-slate-400 text-sm">{mode === 'LOGIN' ? 'Sign in to manage your plans' : 'Register to start your plan submission'}</p>

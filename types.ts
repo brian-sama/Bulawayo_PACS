@@ -6,15 +6,32 @@ export const PlanStatusValues = {
   DRAFT: 'DRAFT',
   SUBMITTED: 'SUBMITTED',
   PRE_SCREENING: 'PRE_SCREENING',
+  PRELIMINARY_SUBMITTED: 'PRELIMINARY_SUBMITTED',
+  PROFORMA_ISSUED: 'PROFORMA_ISSUED',
+  PAID: 'PAID',
   REVIEW_POOL: 'REVIEW_POOL',
   IN_REVIEW: 'IN_REVIEW',
+  UNDER_REVIEW: 'UNDER_REVIEW',
   CORRECTIONS_REQUIRED: 'CORRECTIONS_REQUIRED',
   REJECTED: 'REJECTED',
   APPROVED: 'APPROVED',
   REJECTED_PRE_SCREEN: 'REJECTED_PRE_SCREEN'
 };
 
-export type PlanStatus = keyof typeof PlanStatusValues;
+export type PlanStatus = keyof typeof PlanStatusValues | string;
+
+export interface DepartmentReview {
+  id: number;
+  plan: number;
+  department: number;
+  department_name: string;
+  reviewer?: number;
+  reviewer_name?: string;
+  status: 'PENDING' | 'APPROVED' | 'CORRECTIONS_REQUIRED' | 'REJECTED';
+  comments: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface DepartmentComment {
   id: string;
@@ -44,6 +61,7 @@ export interface Plan {
   status: PlanStatus;
   declared_area?: number;
   calculated_area?: number;
+  development_description?: string;
   submitted_at: string | null;
   created_at: string;
   updated_at: string;

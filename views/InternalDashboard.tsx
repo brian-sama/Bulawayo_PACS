@@ -33,7 +33,11 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
 
     useEffect(() => {
         api.getPlans().then(data => {
-            setPlans(data);
+            // Sort by latest first (created_at descending)
+            const sorted = [...data].sort((a, b) => 
+                new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+            setPlans(sorted);
             setLoading(false);
         }).catch(err => {
             console.error(err);
@@ -44,11 +48,16 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
     // Logic to filter plans relevant to the staff member's department
     const departmentalPlans = plans; // Filtering is now handled by the backend queryset
 
-    const urgentPlans = departmentalPlans.filter(p =>
-        p.status === 'IN_REVIEW' || p.status === 'CORRECTIONS_REQUIRED'
+    const urgentPlans = plans.filter(p =>
+        p.status === 'IN_REVIEW' || p.status === 'UNDER_REVIEW' || p.status === 'REVIEW_POOL'
     );
-    const recentPlans = [...departmentalPlans].sort((a, b) => b.id - a.id).slice(0, 5);
 
+    const today = new Date().toISOString().split('T')[0];
+    const reviewsToday = plans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length;
+    const approvals = plans.filter(p => p.status === 'APPROVED').length;
+    const complianceRate = plans.length > 0 ? Math.round((approvals / plans.length) * 100) : 0;
+
+    const recentPlans = [...plans].slice(0, 5); // Already sorted
     const displayPlans = activeTab === 'PRIORITY' ? urgentPlans : recentPlans;
 
     if (loading) {
@@ -62,7 +71,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                 <KPICard
                     title="Personal Queue"
                     value={urgentPlans.length}
-                    subValue="0 NEW"
+                    subValue={`${urgentPlans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length} NEW`}
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -71,9 +80,9 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                     color="bg-blue-50 text-blue-600"
                 />
                 <KPICard
-                    title="Review Speed"
-                    value="0"
-                    subValue="DAYS AVG"
+                    title="Today's Active"
+                    value={reviewsToday}
+                    subValue="REVIEWS"
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -83,8 +92,8 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                 />
                 <KPICard
                     title="Compliance Rate"
-                    value="0%"
-                    subValue="N/A"
+                    value={`${complianceRate}%`}
+                    subValue="PASSED"
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -94,8 +103,8 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                 />
                 <KPICard
                     title="Approvals"
-                    value="0"
-                    subValue="Q1 GOAL"
+                    value={approvals}
+                    subValue="V1/V2"
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -202,8 +211,34 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
 
                     <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
                         <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4">Upcoming Deadlines</h3>
-                        <div className="space-y-4 text-center py-4">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No upcoming deadlines</p>
+                        <div className="space-y-4">
+                            {plans.filter(p => {
+                                if (!p.date_submitted) return false;
+                                const deadline = new Date(p.date_submitted);
+                                deadline.setDate(deadline.getDate() + 21);
+                                const today = new Date();
+                                const diff = (deadline.getTime() - today.getTime()) / (1000 * 3600 * 24);
+                                return diff > 0 && diff < 5 && p.status !== 'APPROVED';
+                            }).slice(0, 3).map(p => (
+                                <div key={p.id} className="flex items-center gap-3 p-3 bg-red-50 rounded-xl border border-red-100">
+                                    <div className="w-8 h-8 bg-red-600 text-white rounded-lg flex items-center justify-center text-xs font-black">!</div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-[10px] font-black text-slate-800 truncate uppercase">{p.plan_id}</p>
+                                        <p className="text-[8px] font-bold text-red-600 uppercase tracking-tighter">SLA Breach in {Math.ceil((new Date(p.date_submitted!).getTime() + 21 * 24 * 60 * 60 * 1000 - new Date().getTime()) / (1000 * 60 * 60 * 24))} Days</p>
+                                    </div>
+                                    <button onClick={() => onViewPlan(p)} className="text-[9px] font-black text-slate-400 hover:text-red-600">VIEW</button>
+                                </div>
+                            ))}
+                            {plans.filter(p => {
+                                if (!p.date_submitted) return false;
+                                const deadline = new Date(p.date_submitted);
+                                deadline.setDate(deadline.getDate() + 21);
+                                const today = new Date();
+                                const diff = (deadline.getTime() - today.getTime()) / (1000 * 3600 * 24);
+                                return diff > 0 && diff < 5 && p.status !== 'APPROVED';
+                            }).length === 0 && (
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center py-4">No upcoming deadlines</p>
+                                )}
                         </div>
                     </div>
                 </div>

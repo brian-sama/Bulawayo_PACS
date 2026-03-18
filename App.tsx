@@ -3,12 +3,12 @@ import React, { useState } from 'react';
 import { UserRole, Plan, PlanStatusValues, UserProfile } from './types';
 import { Header } from './components/Header';
 import { ClientDashboard } from './views/ClientDashboard';
-import { ReviewInterface } from './views/ReviewInterface';
 import { AnalyticsDashboard } from './views/AnalyticsDashboard';
+import { ReviewWorkspace } from './views/ReviewWorkspace';
 import { LoginView } from './views/LoginView';
 import { UserManagement } from './views/UserManagement';
 import { MOCK_PLANS } from './constants';
-import { logout } from './services/api';
+import { logout as apiLogout } from './services/api';
 import { ReceptionGateway } from './views/ReceptionGateway';
 import { FinalApproval } from './views/FinalApproval';
 import { ITDashboard } from './views/ITDashboard';
@@ -16,6 +16,9 @@ import { AuditLogs } from './views/AuditLogs';
 import SearchArchive from './views/SearchArchive';
 import { InternalDashboard } from './views/InternalDashboard';
 import { PlanDetails } from './views/PlanDetails';
+import { ReviewPool } from './views/ReviewPool';
+import { LandingPage } from './views/LandingPage';
+import { ReviewInterface } from './views/ReviewInterface';
 
 type ViewType = 'DASHBOARD' | 'REVIEWS' | 'PLAN_DETAILS' | 'ANALYTICS' | 'USER_MANAGEMENT' | 'RECEPTION' | 'FINAL_APPROVAL' | 'SEARCH_ARCHIVE' | 'IT_DASHBOARD' | 'AUDIT_LOGS' | 'WORKFLOW_CONFIG';
 
@@ -46,8 +49,23 @@ const SidebarIcons = {
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [showLogin, setShowLogin] = useState(sessionStorage.getItem('pacs_show_login') === 'true');
   const [currentView, setCurrentView] = useState<ViewType>('DASHBOARD');
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
+  /**
+   * appKey is incremented on logout to force a full React tree remount,
+   * clearing all component state and preventing session bleed between users.
+   */
+  const [appKey, setAppKey] = useState(0);
+
+  const handleLogout = () => {
+    setAppKey(k => k + 1);
+    setUser(null);
+    setShowLogin(false);
+    setCurrentView('DASHBOARD');
+    setSelectedPlan(null);
+    apiLogout(); // clears localStorage, sessionStorage, redirects to '/'
+  };
 
   const role = user?.role;
 
@@ -71,11 +89,13 @@ export const App: React.FC = () => {
         );
       case 'PLAN_DETAILS':
         if (!selectedPlan) return null;
-        return role === 'CLIENT' ? (
-          <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
-        ) : (
-          <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('REVIEWS')} />
-        );
+        if (role === 'CLIENT') {
+          return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+        } else if (role === 'DEPT_OFFICER' || role === 'DEPT_HEAD') {
+          return <ReviewWorkspace planId={String(selectedPlan.id)} onClose={() => setCurrentView('REVIEWS')} userRole={role} />
+        } else {
+          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('REVIEWS')} />
+        }
       case 'ANALYTICS':
         return <AnalyticsDashboard />;
       case 'USER_MANAGEMENT':
@@ -103,38 +123,32 @@ export const App: React.FC = () => {
       case 'FINAL_APPROVAL':
         return <FinalApproval user={user} />;
       case 'REVIEWS':
-        return (
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <h1 className="text-2xl font-bold text-slate-800">Review Pool</h1>
-              <div className="flex gap-2">
-                <input type="text" placeholder="Search by Plan ID..." className="px-4 py-2 border rounded-lg text-sm w-64 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-            </div>
-            {/* Real data table will go here */}
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center text-slate-500">
-              Select a plan to start technical review.
-            </div>
-          </div>
-        );
+        return <ReviewPool user={user!} onViewPlan={handleViewPlan} />;
       case 'SEARCH_ARCHIVE':
-        return <SearchArchive user={user!} />;
+        return <SearchArchive user={user!} onViewPlan={handleViewPlan} />;
       default:
         return <div>View not implemented</div>;
     }
   };
 
+  if (!user && !showLogin) {
+    return <LandingPage onGetStarted={() => setShowLogin(true)} />;
+  }
+
   if (!user) {
-    return <LoginView onLogin={setUser} />;
+    return <LoginView onLogin={setUser} onBack={() => {
+      sessionStorage.removeItem('pacs_show_login');
+      setShowLogin(false);
+    }} />;
   }
 
   return (
-    <div className="flex h-screen bg-[#F9FAFB] overflow-hidden font-interface selection:bg-blue-100 selection:text-blue-900">
+    <div key={appKey} className="flex h-screen bg-[#F9FAFB] overflow-hidden font-interface selection:bg-blue-100 selection:text-blue-900">
       {/* Sidebar with BCC Branding */}
       <aside className="w-72 bg-[#003366] text-white flex flex-col shrink-0 shadow-[10px_0_30px_rgba(0,0,0,0.1)] relative z-20">
         <div className="p-8 border-b border-white/5 flex flex-col items-center gap-4 bg-white/5">
           <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center shadow-2xl p-1">
-            <img src="/logo.png.png" alt="BCC" className="w-full h-full object-contain" />
+            <img src="/logo.png" alt="BCC" className="w-full h-full object-contain" />
           </div>
           <div className="text-center">
             <h1 className="font-black tracking-tighter text-2xl">Bulawayo PACS</h1>
@@ -194,7 +208,7 @@ export const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0">
-        <Header user={user} onLogout={() => { logout(); setUser(null); }} />
+        <Header user={user} onLogout={handleLogout} />
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
           <div className="max-w-7xl mx-auto h-full">
             {renderContent()}

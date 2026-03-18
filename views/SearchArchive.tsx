@@ -1,23 +1,45 @@
-
+import React, { useState, useEffect } from 'react';
 import { Plan, UserProfile } from '../types';
+import * as api from '../services/api';
+import { StatusBadge } from '../components/StatusBadge';
 
 interface SearchArchiveProps {
     user: UserProfile;
+    onViewPlan: (plan: Plan) => void;
 }
 
-const SearchArchive: React.FC<SearchArchiveProps> = ({ user }) => {
+const SearchArchive: React.FC<SearchArchiveProps> = ({ user, onViewPlan }) => {
     const [searchTerm, setSearchTerm] = useState('');
-    const [results, setResults] = useState<Plan[]>(MOCK_PLANS);
+    const [plans, setPlans] = useState<Plan[]>([]);
+    const [results, setResults] = useState<Plan[]>([]);
+    const [loading, setLoading] = useState(true);
     const isAdmin = user.role === 'ADMIN';
+
+    useEffect(() => {
+        loadPlans();
+    }, []);
+
+    const loadPlans = async () => {
+        setLoading(true);
+        try {
+            const data = await api.getPlans();
+            setPlans(data);
+            setResults(data);
+        } catch (error) {
+            console.error("Failed to load plans:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
         const term = e.target.value.toLowerCase();
         setSearchTerm(term);
-        const filtered = MOCK_PLANS.filter(plan =>
+        const filtered = plans.filter(plan =>
             plan.plan_id.toLowerCase().includes(term) ||
             plan.stand_addr.toLowerCase().includes(term) ||
-            plan.client_name?.toLowerCase().includes(term) ||
-            plan.architect.name.toLowerCase().includes(term)
+            (plan.client_name && plan.client_name.toLowerCase().includes(term)) ||
+            (plan.architect && plan.architect.name && plan.architect.name.toLowerCase().includes(term))
         );
         setResults(filtered);
     };
@@ -79,7 +101,11 @@ const SearchArchive: React.FC<SearchArchiveProps> = ({ user }) => {
                                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                                         </button>
                                     ) : (
-                                        <button className="text-slate-400 hover:text-[#003366]" title="View Plan Details">
+                                        <button
+                                            onClick={() => onViewPlan(plan)}
+                                            className="text-slate-400 hover:text-[#003366]"
+                                            title="View Plan Details"
+                                        >
                                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
                                         </button>
                                     )}

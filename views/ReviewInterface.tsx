@@ -22,48 +22,90 @@ const PlanPin: React.FC<{ x: number, y: number, children: React.ReactNode, class
   return <div ref={ref} className={className}>{children}</div>;
 };
 
-export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan, onBack, user }) => {
+export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan: initialPlan, onBack, user }) => {
+  const [plan, setPlan] = useState<Plan>(initialPlan);
   const [activeTab, setActiveTab] = useState<'VIEW' | 'COMMENTS'>('VIEW');
   const [comment, setComment] = useState('');
   const [vote, setVote] = useState<'APPROVED' | 'CORRECTIONS_REQUIRED' | 'REJECTED'>('APPROVED');
   const [pin, setPin] = useState<{ x: number, y: number } | null>(null);
+  const [pinMode, setPinMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [localComments, setLocalComments] = useState<DepartmentComment[]>([]);
+  const [currentVersionId, setCurrentVersionId] = useState<number | null>(null);
+  const [availableVersions, setAvailableVersions] = useState<any[]>([]);
+  const [userReviewId, setUserReviewId] = useState<number | null>(null);
 
   useEffect(() => {
-    // In real app, fetch latest comments for the current plan version
-    if (plan.id) {
-      api.getPlanDetail(plan.id).then(data => {
-        // Handle nested comments if available
-      });
+    refreshPlan();
+  }, [initialPlan.id]);
+
+  const refreshPlan = async () => {
+    if (!initialPlan.id) return;
+    try {
+      const data = await api.getPlanDetail(initialPlan.id);
+      setPlan(data);
+
+      // Determine the current version ID (latest one)
+      if (data.versions && data.versions.length > 0) {
+        const latest = data.versions[0];
+        setCurrentVersionId(latest.id);
+        setAvailableVersions(data.versions);
+      }
+
+      // Find the specific DepartmentReview record for this user's department
+      if (data.department_reviews) {
+        const myReview = data.department_reviews.find((r: any) =>
+          r.department === user.department || r.department_name === user.department_name
+        );
+        if (myReview) {
+          setUserReviewId(myReview.id);
+        }
+      }
+
+      // Load comments for version
+      setLocalComments(data.comments || []);
+    } catch (error) {
+      console.error("Failed to load plan details:", error);
     }
-  }, [plan.id]);
+  };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pinMode) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     setPin({ x, y });
+    setPinMode(false);
     setActiveTab('VIEW');
   };
 
   const handleSubmitReview = async () => {
-    if (!comment) return;
+    if (!comment || !userReviewId) {
+      if (!userReviewId) alert("No active review assignment found for your department.");
+      return;
+    }
     setLoading(true);
     try {
-      const currentVersionId = 1; // Needs to be dynamic
-      const res = await api.addComment(
-        currentVersionId,
-        user.department || 1,
-        comment,
-        vote,
-        pin?.x,
-        pin?.y
-      );
-      // Update local UI
-      setLocalComments([...localComments, res]);
+      // 1. Submit the actual review evaluation (Status update)
+      const role = user.role.includes('HEAD') ? 'HEAD' : 'OFFICER';
+      await api.evaluateReview(userReviewId, role, vote, comment);
+
+      // 2. Add the pinned comment if coordinate exists
+      if (pin && currentVersionId) {
+        await api.addComment(
+          currentVersionId,
+          user.department || 1,
+          comment,
+          vote,
+          pin.x,
+          pin.y
+        );
+      }
+
+      alert("Review submitted successfully.");
       setComment('');
       setPin(null);
+      refreshPlan(); // Sync status from backend
     } catch (e) {
       console.error(e);
       alert("Failed to submit review.");
@@ -164,11 +206,12 @@ export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan, onBack, 
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Markup Tools</h3>
             <div className="grid grid-cols-2 gap-2">
               <button
+                onClick={() => setPinMode(!pinMode)}
                 aria-label="Add comment pin"
                 title="Add comment pin"
-                className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-xs font-bold transition ${pin ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-xs font-bold transition ${pinMode ? 'bg-blue-600 text-white border-blue-700 scale-105' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
               >
-                <span className="text-lg">📍</span> Pin
+                <span className="text-lg">📍</span> {pinMode ? 'Active' : 'Pin'}
                 <span className="sr-only">Add comment pin</span>
               </button>
               <button
@@ -180,17 +223,23 @@ export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan, onBack, 
                 <span className="sr-only">Measure tool</span>
               </button>
             </div>
+            {pinMode && (
+              <p className="text-[9px] text-blue-600 font-bold mt-3 uppercase tracking-wider animate-pulse text-center">Click on drawing to set pin location</p>
+            )}
           </div>
 
           <div className="p-4 bg-slate-900 text-white mt-auto rounded-b-xl">
             <label className="text-[10px] font-bold text-slate-500 uppercase block mb-2">Version Controller</label>
             <select
-              aria-label="Select plan version"
               title="Select plan version"
+              value={currentVersionId || ''}
+              onChange={(e) => setCurrentVersionId(Number(e.target.value))}
               className="w-full bg-slate-800 border-none rounded p-2 text-xs font-bold outline-none ring-1 ring-white/10"
             >
-              <option>Version 1 (Initial)</option>
-              <option disabled>Version 2 (Not available)</option>
+              {availableVersions.map(v => (
+                <option key={v.id} value={v.id}>Version {v.version_number} ({new Date(v.uploaded_at).toLocaleDateString()})</option>
+              ))}
+              {availableVersions.length === 0 && <option>No versions found</option>}
             </select>
           </div>
         </div>
@@ -198,7 +247,7 @@ export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan, onBack, 
         {/* 3. Center Canvas (The Document Viewer Engine) */}
         <div className="flex-1 bg-slate-200 relative overflow-auto p-8 flex justify-center">
           <div
-            className="bg-white shadow-2xl relative cursor-crosshair min-w-[800px] aspect-[1/1.41] origin-top scale-100"
+            className={`bg-white shadow-2xl relative ${pinMode ? 'cursor-cell ring-4 ring-blue-400' : 'cursor-default'} min-w-[800px] aspect-[1/1.41] origin-top scale-100`}
             onClick={handleCanvasClick}
           >
             {/* PDF Mock Content */}
