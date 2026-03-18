@@ -25,6 +25,15 @@ export interface ApiDepartment {
   name: string;
 }
 
+export interface ApiAuditLog {
+  id: number;
+  user_name: string;
+  action: string;
+  timestamp: string;
+  target_model: string;
+  target_id: string | number;
+}
+
 // ─────────────────────────────────────────────
 // TOKEN MANAGEMENT
 // ─────────────────────────────────────────────
@@ -224,6 +233,9 @@ export const rejectPreScreen = async (planId: number, reason: string): Promise<a
 
 export const runAutoChecks = async (planId: number): Promise<any> =>
   apiFetch(`/plans/${planId}/run_auto_checks/`, { method: 'POST' });
+
+export const submitDocuments = async (planId: number): Promise<any> =>
+  apiFetch(`/plans/${planId}/submit_documents/`, { method: 'POST' });
 
 /**
  * Returns the URL to securely stream the current plan PDF through the

@@ -347,12 +347,45 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         plan.status = PlanStatus.DRAFT
         plan.save(update_fields=['status'])
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-        log_action(request.user, 'PLAN_CREATED', 'Plan', plan.id,
-                   new_value={'plan_id': plan.plan_id}, request=request)
+    @action(detail=True, methods=['post'])
+    def submit_documents(self, request, pk=None):
+        """
+        Transition plan from PAID/PROFORMA_ISSUED to DOCUMENTS_PENDING_VERIFICATION
+        after the client has uploaded all required documents.
+        """
+        plan = self.get_object()
+        
+        # We allow submission if they've paid or just received proforma
+        # (The receptionist will verify the actually uploaded docs anyway)
+        valid_statuses = [PlanStatus.PROFORMA_ISSUED, PlanStatus.PAID, PlanStatus.PAYMENT_PENDING]
+        if plan.status not in valid_statuses:
+             return Response(
+                {'error': f'Cannot submit documents for plan in {plan.status} status.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        return Response(PlanListSerializer(plan, context={'request': request}).data,
-                        status=status.HTTP_201_CREATED)
+        old_status = plan.status
+        plan.status = PlanStatus.DOCUMENTS_PENDING_VERIFICATION
+        plan.save(update_fields=['status'])
+
+        log_action(request.user, 'DOCUMENTS_SUBMITTED', 'Plan', plan.id, 
+                   old_value={'status': old_status}, new_value={'status': plan.status},
+                   request=request)
+
+        # Notify Reception
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        receptionists = User.objects.filter(role='RECEPTION', is_active=True)
+        for rec in receptionists:
+            dispatch_notification(
+                rec, 'DOCUMENTS_SUBMITTED',
+                f'New documents have been submitted for {plan.plan_id} ({plan.stand.address}). Please verify.',
+                subject=f'Documents Submitted: {plan.plan_id}'
+            )
+
+        return Response({'status': 'DOCUMENTS_PENDING_VERIFICATION'})
 
     def perform_create(self, serializer):
         pass  # Overridden by create() above
@@ -400,6 +433,17 @@ class PlanViewSet(viewsets.ModelViewSet):
         log_action(request.user, 'PRELIMINARY_SUBMITTED', 'Plan', plan.id,
                    old_value={'status': old}, new_value={'status': plan.status},
                    request=request)
+
+        # Notify Reception
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        receptionists = User.objects.filter(role='RECEPTION', is_active=True)
+        for rec in receptionists:
+            dispatch_notification(
+                rec, 'PLAN_SUBMITTED',
+                f'A new preliminary plan ({plan.plan_id}) has been submitted for pre-screening.',
+                subject=f'New Submission: {plan.plan_id}'
+            )
 
         return Response({'status': plan.status, 'plan_id': plan.plan_id})
 
@@ -538,6 +582,18 @@ class PlanViewSet(viewsets.ModelViewSet):
         log_action(request.user, 'SUBMITTED_TO_REVIEW', 'Plan', plan.id,
                    old_value={'status': old}, new_value={'status': plan.status},
                    request=request)
+
+        # Notify relevant officers
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        for dept in target_depts:
+            officers = User.objects.filter(role='DEPT_OFFICER', department=dept, is_active=True)
+            for officer in officers:
+                dispatch_notification(
+                    officer, 'REVIEW_REQUESTED',
+                    f'Plan {plan.plan_id} has been added to the {dept.name} review pool.',
+                    subject=f'Review Required ({dept.name})'
+                )
 
         return Response({
             'status': plan.status,
@@ -772,6 +828,18 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             review.officer_acted_at = timezone.now()
             review.save()
 
+            # Notify Department Head
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            plan = review.plan_version.plan
+            heads = User.objects.filter(role='DEPT_HEAD', department=review.department, is_active=True)
+            for head in heads:
+                dispatch_notification(
+                    head, 'REVIEW_COMPLETED',
+                    f'Officer {user.full_name or user.username} has completed the {decision} review for plan {plan.plan_id}.',
+                    subject=f'Officer Review Complete: {plan.plan_id}'
+                )
+
         elif role == 'HEAD':
             if user.role not in [UserRole.DEPT_HEAD, UserRole.ADMIN]:
                 return Response({'error': 'Only Department Head can perform this action.'}, status=403)
@@ -797,12 +865,13 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
         log_action(user, f'DEPT_REVIEW_{role}_{decision}', 'DepartmentReview', review.id,
                    new_value={'decision': decision, 'comment': comment}, request=request)
 
-        # Notify applicant
-        dispatch_notification(
-            plan.client, 'DEPT_DECISION',
-            f'{review.department.name} has submitted a review on your application {plan.plan_id}: {decision}.',
-            subject=f'Department Decision — {plan.plan_id}'
-        )
+        # Notify applicant only when the HEAD makes a decision
+        if role == 'HEAD':
+            dispatch_notification(
+                plan.client, 'DEPT_DECISION',
+                f'{review.department.name} has submitted a final review on your application {plan.plan_id}: {decision}.',
+                subject=f'Department Decision — {plan.plan_id}'
+            )
 
         # Check if all departments are resolved and advance plan status
         _check_and_advance_to_final_decision(plan)

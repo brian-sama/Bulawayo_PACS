@@ -8,15 +8,15 @@ interface ClientResponseViewProps {
     onCancel: () => void;
 }
 
-const REQUIRED_DOCS = [
-    { label: 'Proforma Invoice (Receipt)', type: 'RECEIPT' },
+const ALL_DOCS = [
+    { label: 'Proforma Invoice (Receipt / Proof of Payment)', type: 'RECEIPT' },
     { label: 'Clear Rates Balance (BCC Contacts)', type: 'RATES' },
     { label: 'Re-uploaded Plan (if modified)', type: 'PLAN' },
     { label: 'Engineer Certificate', type: 'ENG_CERT' },
     { label: 'Agreement of Sale / Lease Agreement', type: 'OWNERSHIP' },
     { label: 'Title Deeds', type: 'DEED' },
     { label: 'Architect Registration Certificate', type: 'ARCH_CERT' },
-    { label: 'Engineer’s Structural Drawings', type: 'ENG_DRAWINGS' },
+    { label: "Engineer's Structural Drawings", type: 'ENG_DRAWINGS' },
     { label: 'Letter from Neighbor', type: 'NEIGHBOR' },
 ];
 
@@ -25,9 +25,25 @@ export const ClientResponseView: React.FC<ClientResponseViewProps> = ({ plan, on
     const [uploads, setUploads] = useState<Record<string, File | null>>({});
     const [loading, setLoading] = useState(false);
     const [submittedDocs, setSubmittedDocs] = useState<any[]>([]);
+    const [requiredDocs, setRequiredDocs] = useState<typeof ALL_DOCS>(ALL_DOCS);
 
     useEffect(() => {
         api.getSubmittedDocuments(plan.id).then(setSubmittedDocs);
+
+        // Load required docs from proforma invoice notes
+        api.getProformaInvoicesForPlan(plan.id).then(invoices => {
+            const latest = invoices[0];
+            if (latest?.notes) {
+                const match = latest.notes.match(/__REQUIRED_DOCS__:(\[.*?\])/);
+                if (match) {
+                    try {
+                        const ids: string[] = JSON.parse(match[1]);
+                        const filtered = ALL_DOCS.filter(d => ids.includes(d.type));
+                        if (filtered.length > 0) setRequiredDocs(filtered);
+                    } catch { /* fall back to all docs */ }
+                }
+            }
+        }).catch(() => {});
     }, [plan.id]);
 
     const handleFileChange = (label: string, file: File | null) => {
@@ -44,13 +60,14 @@ export const ClientResponseView: React.FC<ClientResponseViewProps> = ({ plan, on
 
             // Upload files
             for (const [label, file] of Object.entries(uploads)) {
-                if (file) {
+                if (file instanceof File) {
                     await api.uploadSubmittedDocument(plan.id, file, label);
                 }
             }
 
-            // Transition status (assuming there's an endpoint or it happens automatically)
-            // For now, just notifying success
+            // Transition status
+            await api.submitDocuments(plan.id);
+            
             alert('Response submitted successfully! Reception will verify your documents.');
             onSuccess();
         } catch (e: any) {
@@ -91,7 +108,7 @@ export const ClientResponseView: React.FC<ClientResponseViewProps> = ({ plan, on
                 <div className="space-y-6">
                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Required Documentation</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {REQUIRED_DOCS.map(doc => (
+                        {requiredDocs.map(doc => (
                             <div key={doc.label} className={`p-5 rounded-2xl border-2 transition-all flex items-center justify-between ${isDocUploaded(doc.label) ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-100'}`}>
                                 <div className="flex-1">
                                     <p className={`text-xs font-black uppercase tracking-tight ${isDocUploaded(doc.label) ? 'text-emerald-700' : 'text-slate-700'}`}>{doc.label}</p>

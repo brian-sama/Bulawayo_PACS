@@ -258,11 +258,19 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({ planId, onClos
                             <p className="text-sm font-medium">Loading plan preview...</p>
                         </div>
                     ) : previewUrl ? (
-                        <iframe
-                            src={previewUrl}
-                            className="w-full h-full border-none"
+                        <object
+                            data={previewUrl}
+                            type="application/pdf"
+                            className="w-full h-full"
                             title={`Plan ${plan.plan_id} PDF Preview`}
-                        />
+                        >
+                            <div className="flex flex-col items-center justify-center h-full gap-4">
+                                <p className="text-sm font-medium text-slate-500">Your browser can't preview PDFs inline.</p>
+                                <a href={previewUrl} download={`${plan.plan_id}.pdf`} className="px-5 py-3 bg-blue-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-blue-700 transition">
+                                    ↓ Download PDF
+                                </a>
+                            </div>
+                        </object>
                     ) : previewError ? (
                         <div className="text-center p-8 max-w-sm">
                             <div className="w-12 h-12 bg-red-50 rounded-xl flex items-center justify-center mx-auto mb-3 text-red-400 text-2xl">⚠</div>

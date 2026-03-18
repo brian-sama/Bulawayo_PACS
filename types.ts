@@ -94,3 +94,11 @@ export interface UserProfile {
   department_name?: string;
 }
 
+export interface Notification {
+  id: number;
+  type: string;
+  subject: string;
+  message: string;
+  is_read: boolean;
+  sent_at: string;
+}

@@ -54,6 +54,7 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
         // Used for PRELIMINARY path only
         preliminary: {
             planFile: null as File | null,
+            titleDeedFile: null as File | null,
         },
     });
 
@@ -161,6 +162,10 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
             }
 
             initPayload.append('declared_area', formData.geometry.declaredArea || '0');
+
+            // Attach title deed at plan creation time so backend saves it to `title_deed` field
+            if (formData.preliminary.titleDeedFile)
+                initPayload.append('title_deed', formData.preliminary.titleDeedFile);
 
             const plan = await api.apiFetch('/plans/', { method: 'POST', body: initPayload });
 
@@ -495,15 +500,16 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                     </div>
                 )}
 
-                {/* ── STEP 4 (PRELIMINARY): Plan File upload ───────────────── */}
+                {/* ── STEP 4 (PRELIMINARY): Plan File + Ownership Doc ──── */}
                 {step === 4 && isPrelim && (
-                    <div className="space-y-10 animate-in fade-in slide-in-from-right-8 duration-500">
+                    <div className="space-y-8 animate-in fade-in slide-in-from-right-8 duration-500">
                         <div>
-                            <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-1">Plan File</h3>
-                            <p className="text-sm font-medium text-slate-400">Upload your architectural drawings for fee calculation. This is the only required document for a preliminary submission.</p>
+                            <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-1">Plan File & Ownership</h3>
+                            <p className="text-sm font-medium text-slate-400">Upload your architectural drawings (required) and proof of ownership (optional but recommended for faster processing).</p>
                         </div>
 
-                        <div className="border-2 border-dashed border-slate-200 rounded-[2rem] p-12 text-center hover:border-blue-400 hover:bg-blue-50/20 transition-all cursor-pointer group relative">
+                        {/* Architectural Plan — required */}
+                        <div className="border-2 border-dashed border-slate-200 rounded-[2rem] p-10 text-center hover:border-blue-400 hover:bg-blue-50/20 transition-all cursor-pointer group relative">
                             <input
                                 title="Architectural Plan PDF"
                                 type="file"
@@ -511,13 +517,33 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                                 onChange={e => handleFileUpload('preliminary', 'planFile', e.target.files)}
                                 className="absolute inset-0 opacity-0 cursor-pointer"
                             />
-                            <div className="w-16 h-16 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-3xl mx-auto mb-5 group-hover:scale-110 transition-transform shadow-xl">📄</div>
-                            <p className="font-black text-slate-800 uppercase tracking-widest text-sm mb-2">Upload Architectural Drawings (PDF)</p>
+                            <div className="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto mb-4 group-hover:scale-110 transition-transform shadow-xl">📄</div>
+                            <p className="font-black text-slate-800 uppercase tracking-widest text-sm mb-1">Architectural Drawings (PDF) <span className="text-red-500">*</span></p>
                             <p className="text-xs text-slate-400 uppercase">Required for fee calculation · Max 50MB</p>
                             {formData.preliminary.planFile && (
-                                <div className="mt-6 inline-flex items-center gap-3 bg-emerald-50 rounded-2xl border border-emerald-100 px-6 py-3">
+                                <div className="mt-5 inline-flex items-center gap-3 bg-emerald-50 rounded-2xl border border-emerald-100 px-5 py-2.5">
                                     <span className="text-emerald-500 font-black text-lg">✓</span>
                                     <span className="text-[10px] font-black text-emerald-800 uppercase">{formData.preliminary.planFile.name}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Title Deed — optional but strongly encouraged */}
+                        <div className="border-2 border-dashed border-slate-200 rounded-[2rem] p-10 text-center hover:border-indigo-300 hover:bg-indigo-50/20 transition-all cursor-pointer group relative">
+                            <input
+                                title="Proof of Ownership / Title Deed"
+                                type="file"
+                                accept=".pdf"
+                                onChange={e => handleFileUpload('preliminary', 'titleDeedFile', e.target.files)}
+                                className="absolute inset-0 opacity-0 cursor-pointer"
+                            />
+                            <div className="w-14 h-14 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto mb-4 group-hover:scale-110 transition-transform shadow-xl">📜</div>
+                            <p className="font-black text-slate-800 uppercase tracking-widest text-sm mb-1">Proof of Ownership / Title Deed <span className="text-slate-300">(Optional)</span></p>
+                            <p className="text-xs text-slate-400 uppercase">Helps the receptionist verify ownership during compliance check</p>
+                            {formData.preliminary.titleDeedFile && (
+                                <div className="mt-5 inline-flex items-center gap-3 bg-emerald-50 rounded-2xl border border-emerald-100 px-5 py-2.5">
+                                    <span className="text-emerald-500 font-black text-lg">✓</span>
+                                    <span className="text-[10px] font-black text-emerald-800 uppercase">{formData.preliminary.titleDeedFile.name}</span>
                                 </div>
                             )}
                         </div>

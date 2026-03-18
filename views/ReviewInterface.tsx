@@ -92,14 +92,14 @@ export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan: initialP
 
       // 2. Add the pinned comment if coordinate exists
       if (pin && currentVersionId) {
-        await api.addComment(
-          currentVersionId,
-          user.department || 1,
-          comment,
-          vote,
-          pin.x,
-          pin.y
-        );
+        await api.addComment({
+          plan_version: currentVersionId,
+          department: user.department || 1,
+          text: comment,
+          status_vote: vote,
+          pdf_pin_x: pin.x,
+          pdf_pin_y: pin.y,
+        });
       }
 
       alert("Review submitted successfully.");

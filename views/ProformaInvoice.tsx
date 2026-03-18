@@ -256,6 +256,18 @@ const DEFAULT_LINE_ITEMS = [
     { label: 'Rate Payments', vote_no: '', amount_zwl: 0, amount_usd: 0, is_rates_payment: true },
 ];
 
+const ALL_REQUIRED_DOCS = [
+    { id: 'RECEIPT',      label: 'Proforma Invoice (Receipt / Proof of Payment)' },
+    { id: 'RATES',        label: 'Clear Rates Balance (BCC Contacts)' },
+    { id: 'PLAN',         label: 'Re-uploaded Plan (if modified)' },
+    { id: 'ENG_CERT',     label: 'Engineer Certificate' },
+    { id: 'OWNERSHIP',    label: 'Agreement of Sale / Lease Agreement' },
+    { id: 'DEED',         label: 'Title Deeds' },
+    { id: 'ARCH_CERT',    label: 'Architect Registration Certificate' },
+    { id: 'ENG_DRAWINGS', label: "Engineer's Structural Drawings" },
+    { id: 'NEIGHBOR',     label: 'Letter from Neighbor' },
+];
+
 interface ProformaGeneratorProps {
     plan: any;
     onSubmit: (lineItems: LineItem[], payload: { notes: string; reception_contacts: string; rates_comment: string }) => Promise<void>;
@@ -270,6 +282,13 @@ export const ProformaGenerator: React.FC<ProformaGeneratorProps> = ({
     const [notes, setNotes] = React.useState('');
     const [contacts, setContacts] = React.useState('');
     const [ratesComment, setRatesComment] = React.useState('');
+    const [requiredDocs, setRequiredDocs] = React.useState<string[]>(['RECEIPT']);
+
+    const toggleDoc = (id: string) => {
+        setRequiredDocs(prev =>
+            prev.includes(id) ? prev.filter(d => d !== id) : [...prev, id]
+        );
+    };
 
     const updateItem = (idx: number, field: keyof LineItem, value: any) => {
         setItems(prev => prev.map((item, i) => i === idx ? { ...item, [field]: value } : item));
@@ -292,7 +311,11 @@ export const ProformaGenerator: React.FC<ProformaGeneratorProps> = ({
             alert('Please enter at least one fee line item with a non-zero amount.');
             return;
         }
-        onSubmit(nonEmptyItems, { notes, reception_contacts: contacts, rates_comment: ratesComment });
+        // Encode required docs into notes so client side can read them
+        const docsTag = requiredDocs.length > 0
+            ? `__REQUIRED_DOCS__:${JSON.stringify(requiredDocs)}\n\n`
+            : '';
+        onSubmit(nonEmptyItems, { notes: docsTag + notes, reception_contacts: contacts, rates_comment: ratesComment });
     };
 
     return (
@@ -393,6 +416,32 @@ export const ProformaGenerator: React.FC<ProformaGeneratorProps> = ({
                     >
                         + Add line item
                     </button>
+
+                    {/* Required Documents Checklist */}
+                    <div className="mt-6 border border-slate-200 rounded-xl overflow-hidden">
+                        <div className="bg-slate-700 px-4 py-3 flex justify-between items-center">
+                            <h4 className="font-black text-white text-xs uppercase tracking-widest">Required Documents After Payment</h4>
+                            <span className="text-[10px] text-slate-300 font-bold">{requiredDocs.length} selected</span>
+                        </div>
+                        <div className="divide-y divide-slate-50">
+                            {ALL_REQUIRED_DOCS.map(doc => (
+                                <label key={doc.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={requiredDocs.includes(doc.id)}
+                                        onChange={() => toggleDoc(doc.id)}
+                                        className="h-4 w-4 rounded border-slate-300 text-[#003366] focus:ring-[#003366]"
+                                    />
+                                    <span className={`text-sm font-medium ${requiredDocs.includes(doc.id) ? 'text-slate-800' : 'text-slate-400'}`}>
+                                        {doc.label}
+                                    </span>
+                                    {requiredDocs.includes(doc.id) && (
+                                        <span className="ml-auto text-[9px] font-black text-emerald-600 uppercase">✓ Required</span>
+                                    )}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
                         <div className="space-y-4">
