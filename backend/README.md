@@ -10,40 +10,31 @@ python -m pip install -r requirements.txt
 
 ### 2. Configure environment
 
-Copy `.env.example` to `.env` and update your MySQL credentials:
+Copy `.env.example` to `.env` and set your database connection string:
 
 ```
-DB_NAME=bcc_plans
-DB_USER=root
-DB_PASSWORD=your_password
+DATABASE_URL=postgresql://username:password@host/database?sslmode=require
 ```
-
-### 3. Create MySQL database
-
-```sql
-CREATE DATABASE bcc_plans CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-### 4. Run migrations
+### 3. Run migrations
 
 ```bash
 python manage.py makemigrations
 python manage.py migrate
 ```
 
-### 5. Create superuser (Admin)
+### 4. Create superuser (Admin)
 
 ```bash
 python manage.py createsuperuser
 ```
 
-### 6. Seed departments
+### 5. Seed departments
 
 ```bash
 python manage.py seed_departments
 ```
 
-### 7. Run development server
+### 6. Run development server
 
 ```bash
 python manage.py runserver
