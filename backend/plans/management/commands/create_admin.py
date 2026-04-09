@@ -13,8 +13,8 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             '--email',
-            default='admin@bcc.gov.zw',
-            help='Admin email address (default: admin@bcc.gov.zw)',
+            default='admin@citybyo.co.zw',
+            help='Admin email address (default: admin@citybyo.co.zw)',
         )
         parser.add_argument(
             '--password',

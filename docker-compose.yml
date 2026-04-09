@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+    volumes:
+      - media_volume:/app/media
+      - static_volume:/app/staticfiles
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    depends_on:
+      - backend
+    ports:
+      - "8006:80"
+    restart: unless-stopped
+    volumes:
+      - media_volume:/var/www/media:ro
+      - static_volume:/var/www/static:ro
+
+volumes:
+  media_volume:
+  static_volume:
