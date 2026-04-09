@@ -603,7 +603,7 @@ class PlanViewSet(viewsets.ModelViewSet):
 
     # ── Secure file download ──────────────────────────────────────────────
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
     def download_file(self, request, pk=None):
         """Authenticated, secure download of the current plan version file."""
         plan = self.get_object()
@@ -1135,6 +1135,61 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
             ProformaInvoiceSerializer(invoice, context={'request': request}).data,
             status=status.HTTP_201_CREATED
         )
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
+    def download(self, request, pk=None):
+        """Render a simple PDF version of the proforma invoice for client download/viewing."""
+        invoice = self.get_object()
+
+        doc = fitz.open()
+        page = doc.new_page()
+
+        lines = [
+            "Bulawayo PACS Proforma Invoice",
+            "",
+            f"Invoice Number: {invoice.invoice_number}",
+            f"Plan ID: {invoice.plan.plan_id}",
+            f"Status: {invoice.status}",
+            f"Issued At: {invoice.issued_at.strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "Line Items:",
+        ]
+
+        for item in invoice.line_items.all():
+            lines.append(
+                f"- {item.label} | Vote {item.vote_no or 'N/A'} | "
+                f"ZWL {item.amount_zwl} | USD {item.amount_usd}"
+            )
+
+        lines.extend(
+            [
+                "",
+                f"Total ZWL: {invoice.total_zwl}",
+                f"Total USD: {invoice.total_usd}",
+            ]
+        )
+
+        if invoice.notes:
+            lines.extend(["", f"Notes: {invoice.notes}"])
+        if invoice.reception_contacts:
+            lines.extend(["", f"Reception Contacts: {invoice.reception_contacts}"])
+        if invoice.rates_comment:
+            lines.extend(["", f"Rates Comment: {invoice.rates_comment}"])
+
+        y = 72
+        for line in lines:
+            page.insert_text((72, y), str(line), fontsize=11, fontname="helv")
+            y += 18
+
+        pdf_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+
+        response = FileResponse(
+            BytesIO(pdf_bytes),
+            content_type='application/pdf'
+        )
+        response['Content-Disposition'] = f'inline; filename="{invoice.invoice_number}.pdf"'
+        return response
 
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def confirm_payment(self, request, pk=None):

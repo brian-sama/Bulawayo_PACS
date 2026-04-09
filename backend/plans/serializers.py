@@ -243,6 +243,10 @@ class SubmittedDocumentSerializer(serializers.ModelSerializer):
             'verified_by', 'verified_by_name', 'verified_at', 'is_verified', 'comment',
         ]
         read_only_fields = ['id', 'uploaded_by', 'uploaded_at', 'verified_by', 'verified_at']
+        extra_kwargs = {
+            'label': {'required': False, 'allow_blank': True},
+            'required_doc': {'required': False, 'allow_null': True},
+        }
 
     def create(self, validated_data):
         validated_data['uploaded_by'] = self.context['request'].user
