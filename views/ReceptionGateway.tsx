@@ -4,6 +4,7 @@ import { Plan, UserProfile } from '../types';
 import * as api from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
 import { ProformaGenerator, ProformaInvoiceView } from './ProformaInvoice';
+import { usePolling } from '../hooks/usePolling';
 
 interface ReceptionGatewayProps {
     user: UserProfile;
@@ -42,13 +43,9 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     const [proformaSubmitting,   setProformaSubmitting]   = useState(false);
     const [viewProforma,         setViewProforma]         = useState<any | null>(null);
 
-    useEffect(() => {
-        setLoading(true);
-        loadPlans();
-    }, []);
-
-    const loadPlans = () => {
-        api.getPlans().then(data => {
+    const loadPlans = async () => {
+        try {
+            const data = await api.getPlans();
             // Sort by latest first (created_at descending)
             const sorted = [...data].sort((a, b) => 
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -56,9 +53,14 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
             setPlans(sorted.filter((p: any) => ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED'].includes(p.status)));
             setProformaPlans(sorted.filter((p: any) => p.status === 'PROFORMA_ISSUED'));
             setDocVerifyPlans(sorted.filter((p: any) => p.status === 'PAID'));
+        } catch (e) {
+            console.error('Failed to load plans', e);
+        } finally {
             setLoading(false);
-        });
+        }
     };
+
+    usePolling(loadPlans, 10000);
 
     const handlePreScreen = async (approved: boolean) => {
         if (!selectedPlan) return;

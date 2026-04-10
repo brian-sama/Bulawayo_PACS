@@ -4,6 +4,9 @@ import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
     AreaChart, Area
 } from 'recharts';
+import * as api from '../services/api';
+import { usePolling } from '../hooks/usePolling';
+import { useState } from 'react';
 
 const SYSTEM_HEALTH = [
     { time: '08:00', load: 12, users: 45 },
@@ -45,6 +48,30 @@ const MetricCard: React.FC<{ label: string; value: string; subValue: string; col
 };
 
 export const ITDashboard: React.FC = () => {
+    const [stats, setStats] = useState({
+        activeUsers: 0,
+        plansCount: 0,
+        loading: true
+    });
+
+    const fetchSystemStats = async () => {
+        try {
+            const [users, plans] = await Promise.all([
+                api.getUsers(),
+                api.getPlans()
+            ]);
+            setStats({
+                activeUsers: users.length,
+                plansCount: plans.length,
+                loading: false
+            });
+        } catch (e) {
+            console.error('Failed to fetch system stats', e);
+        }
+    };
+
+    usePolling(fetchSystemStats, 10000);
+
     return (
         <div className="space-y-8 animate-fade-in">
             <div className="flex justify-between items-end">
@@ -61,8 +88,8 @@ export const ITDashboard: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <MetricCard label="Active Users" value="238" subValue="+12% Since 8AM" color="blue" />
-                <MetricCard label="Disk Usage" value="64%" subValue="1.2 TB / 2.0 TB" color="amber" />
+                <MetricCard label="System Users" value={String(stats.activeUsers)} subValue="REGISTERED ACCOUNTS" color="blue" />
+                <MetricCard label="Total Plans" value={String(stats.plansCount)} subValue="IN DATABASE" color="amber" />
                 <MetricCard label="System Speed" value="Fast" subValue="99.9% Uptime" color="green" />
                 <MetricCard label="Security" value="Secure" subValue="No issues detected" color="red" />
             </div>

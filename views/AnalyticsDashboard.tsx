@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import * as api from '../services/api';
+import { usePolling } from '../hooks/usePolling';
 
 const DATA_SUBMISSIONS: any[] = [];
 const DATA_CATEGORIES: any[] = [];
@@ -7,6 +9,22 @@ const DATA_CATEGORIES: any[] = [];
 const KPI_STYLE = "bg-white p-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all duration-500 overflow-hidden relative group";
 
 export const AnalyticsDashboard: React.FC = () => {
+    const [plans, setPlans] = useState<any[]>([]);
+    
+    const fetchAnalyticsData = async () => {
+        try {
+            const data = await api.getPlans();
+            setPlans(data);
+        } catch (e) {
+            console.error('Failed to fetch analytics data', e);
+        }
+    };
+
+    usePolling(fetchAnalyticsData, 10000);
+
+    const approvedCount = plans.filter(p => p.status === 'APPROVED').length;
+    const yieldRate = plans.length > 0 ? ((approvedCount / plans.length) * 100).toFixed(1) : '0.0';
+    
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
       {/* 🏛️ Executive Summary KPIs */}
@@ -42,9 +60,9 @@ export const AnalyticsDashboard: React.FC = () => {
         <div className={KPI_STYLE}>
           <div className="relative z-10">
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Approval Yield</p>
-            <h3 className="text-4xl font-black text-slate-800 tracking-tighter">0.0%</h3>
+            <h3 className="text-4xl font-black text-slate-800 tracking-tighter">{yieldRate}%</h3>
             <div className="mt-4 flex items-center gap-2">
-              <span className="text-[10px] font-black px-2 py-1 bg-slate-50 text-slate-400 rounded-lg">0%</span>
+              <span className="text-[10px] font-black px-2 py-1 bg-slate-50 text-slate-400 rounded-lg">{yieldRate}%</span>
               <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Correction rate</span>
             </div>
           </div>
@@ -56,9 +74,9 @@ export const AnalyticsDashboard: React.FC = () => {
         <div className={KPI_STYLE}>
           <div className="relative z-10">
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Total Submissions</p>
-            <h3 className="text-4xl font-black text-slate-800 tracking-tighter">0</h3>
+            <h3 className="text-4xl font-black text-slate-800 tracking-tighter">{plans.length}</h3>
             <div className="mt-4 flex items-center gap-2">
-              <span className="text-[10px] font-black px-2 py-1 bg-slate-50 text-slate-400 rounded-lg">0</span>
+              <span className="text-[10px] font-black px-2 py-1 bg-slate-50 text-slate-400 rounded-lg">{plans.length}</span>
               <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Active Fiscal</span>
             </div>
           </div>

@@ -44,6 +44,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+backend/media/
+backend/db.sqlite3
 eggs/
 .eggs/
 lib/

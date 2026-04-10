@@ -92,8 +92,14 @@ class RegisterView(generics.CreateAPIView):
 
 
 class MeView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method in ['PUT', 'PATCH']:
+            from .serializers import MeUpdateSerializer
+            return MeUpdateSerializer
+        from .serializers import UserSerializer
+        return UserSerializer
 
     def get_object(self):
         return self.request.user
@@ -293,6 +299,9 @@ class PlanViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'retrieve':
             return PlanDetailSerializer
+        if self.action in ['update', 'partial_update']:
+            from .serializers import PlanUpdateSerializer
+            return PlanUpdateSerializer
         return PlanListSerializer
 
     def create(self, request, *args, **kwargs):
@@ -977,6 +986,14 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
         if user.role == UserRole.CLIENT:
             return qs.filter(plan__client=user)
         return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        plan = serializer.validated_data.get('plan')
+        if user.role == UserRole.CLIENT and plan and plan.client != user:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You can only upload documents for your own plans.")
+        serializer.save()
 
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def verify(self, request, pk=None):

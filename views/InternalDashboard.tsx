@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plan, UserProfile } from '../types';
 import * as api from '../services/api';
+import { usePolling } from '../hooks/usePolling';
 
 interface InternalDashboardProps {
     user: UserProfile;
@@ -31,31 +32,41 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
     const [plans, setPlans] = useState<Plan[]>([]);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        api.getPlans().then(data => {
-            // Sort by latest first (created_at descending)
+    const fetchPlans = async () => {
+        try {
+            const data = await api.getPlans();
             const sorted = [...data].sort((a, b) => 
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             );
             setPlans(sorted);
-            setLoading(false);
-        }).catch(err => {
+        } catch (err) {
             console.error(err);
+        } finally {
             setLoading(false);
-        });
-    }, []);
+        }
+    };
+
+    usePolling(fetchPlans, 10000);
 
     // Logic to filter plans relevant to the staff member's department
-    const departmentalPlans = plans; // Filtering is now handled by the backend queryset
+    const isReceptionist = user.role === 'RECEPTION';
 
-    const urgentPlans = plans.filter(p =>
-        p.status === 'IN_REVIEW' || p.status === 'UNDER_REVIEW' || p.status === 'REVIEW_POOL'
-    );
+    const urgentPlans = plans.filter(p => {
+        if (isReceptionist) {
+            return ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED', 'PROFORMA_ISSUED', 'PAID', 'DOCUMENTS_PENDING_VERIFICATION'].includes(p.status);
+        }
+        return p.status === 'IN_REVIEW' || p.status === 'UNDER_REVIEW' || p.status === 'REVIEW_POOL';
+    });
 
     const today = new Date().toISOString().split('T')[0];
     const reviewsToday = plans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length;
     const approvals = plans.filter(p => p.status === 'APPROVED').length;
     const complianceRate = plans.length > 0 ? Math.round((approvals / plans.length) * 100) : 0;
+
+    // Specific stats for receptionist
+    const pendingPreScreen = plans.filter(p => ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED'].includes(p.status)).length;
+    const awaitingPayment = plans.filter(p => p.status === 'PROFORMA_ISSUED').length;
+    const readyToReview = plans.filter(p => p.status === 'PAID').length;
 
     const recentPlans = [...plans].slice(0, 5); // Already sorted
     const displayPlans = activeTab === 'PRIORITY' ? urgentPlans : recentPlans;
@@ -69,9 +80,9 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
             {/* 🚀 Strategic KPIs */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <KPICard
-                    title="Personal Queue"
-                    value={urgentPlans.length}
-                    subValue={`${urgentPlans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length} NEW`}
+                    title={isReceptionist ? "Pending Pre-Screen" : "Personal Queue"}
+                    value={isReceptionist ? pendingPreScreen : urgentPlans.length}
+                    subValue={isReceptionist ? "NEW SUBMISSIONS" : `${urgentPlans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length} NEW`}
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -80,23 +91,23 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                     color="bg-blue-50 text-blue-600"
                 />
                 <KPICard
-                    title="Today's Active"
-                    value={reviewsToday}
-                    subValue="REVIEWS"
+                    title={isReceptionist ? "Awaiting Payment" : "Today's Active"}
+                    value={isReceptionist ? awaitingPayment : reviewsToday}
+                    subValue={isReceptionist ? "ISSUED INVOICES" : "REVIEWS"}
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={isReceptionist ? "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" : "M13 10V3L4 14h7v7l9-11h-7z"} />
                         </svg>
                     }
                     color="bg-amber-50 text-amber-600"
                 />
                 <KPICard
-                    title="Compliance Rate"
-                    value={`${complianceRate}%`}
-                    subValue="PASSED"
+                    title={isReceptionist ? "Verified Ready" : "Compliance Rate"}
+                    value={isReceptionist ? readyToReview : `${complianceRate}%`}
+                    subValue={isReceptionist ? "TO REVIEW" : "PASSED"}
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={isReceptionist ? "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" : "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"} />
                         </svg>
                     }
                     color="bg-emerald-50 text-emerald-600"
@@ -127,7 +138,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                 onClick={() => setActiveTab('PRIORITY')}
                                 className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'PRIORITY' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
-                                {user.role === 'DEPT_HEAD' ? 'Approval Queue' : 'Review Queue'}
+                                {isReceptionist ? 'Action Queue' : user.role === 'DEPT_HEAD' ? 'Approval Queue' : 'Review Queue'}
                             </button>
                             <button
                                 onClick={() => setActiveTab('RECENT')}
@@ -200,10 +211,10 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                 </div>
                             </div>
                             <button
-                                onClick={() => onNavigate('REVIEWS')}
+                                onClick={() => onNavigate(isReceptionist ? 'RECEPTION' : 'REVIEWS')}
                                 className="w-full mt-8 bg-white/10 hover:bg-white/20 border border-white/20 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
                             >
-                                Go to Review Pool
+                                {isReceptionist ? 'Go to Reception Gateway' : 'Go to Review Pool'}
                             </button>
                         </div>
                         <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-white/5 rounded-full blur-3xl"></div>

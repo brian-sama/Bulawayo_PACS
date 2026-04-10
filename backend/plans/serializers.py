@@ -65,6 +65,13 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+class MeUpdateSerializer(UserSerializer):
+    class Meta(UserSerializer.Meta):
+        read_only_fields = UserSerializer.Meta.read_only_fields + [
+            'role', 'user_type', 'department', 'is_active', 'is_email_verified'
+        ]
+
+
 # ─────────────────────────────────────────────
 # DEPARTMENT
 # ─────────────────────────────────────────────
@@ -242,7 +249,7 @@ class SubmittedDocumentSerializer(serializers.ModelSerializer):
             'uploaded_by', 'uploaded_by_name', 'uploaded_at',
             'verified_by', 'verified_by_name', 'verified_at', 'is_verified', 'comment',
         ]
-        read_only_fields = ['id', 'uploaded_by', 'uploaded_at', 'verified_by', 'verified_at']
+        read_only_fields = ['id', 'uploaded_by', 'uploaded_at', 'verified_by', 'verified_at', 'is_verified', 'comment']
         extra_kwargs = {
             'label': {'required': False, 'allow_blank': True},
             'required_doc': {'required': False, 'allow_null': True},
@@ -371,6 +378,14 @@ class PlanListSerializer(serializers.ModelSerializer):
 
     def get_flag_count(self, obj):
         return obj.flags.filter(is_resolved=False).count()
+
+
+class PlanUpdateSerializer(PlanListSerializer):
+    class Meta(PlanListSerializer.Meta):
+        read_only_fields = PlanListSerializer.Meta.read_only_fields + [
+            'status', 'submission_type', 'client', 'plan_id', 'plan_number', 
+            'calculated_area', 'declared_area', 'submitted_at'
+        ]
 
 
 # ─────────────────────────────────────────────

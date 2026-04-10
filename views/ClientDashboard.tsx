@@ -6,6 +6,7 @@ import { Plan } from '../types';
 import { SubmissionWizard } from './SubmissionWizard';
 import { ClientResponseView } from './ClientResponseView';
 import * as api from '../services/api';
+import { usePolling } from '../hooks/usePolling';
 
 interface ClientDashboardProps {
   onViewPlan: (plan: Plan) => void;
@@ -39,25 +40,21 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onViewPlan }) 
   const [invoiceBlobUrl, setInvoiceBlobUrl] = useState<string | null>(null);
   const [invoiceLoading, setInvoiceLoading] = useState(false);
 
-  useEffect(() => {
-    loadPlans();
-  }, []);
+    const loadPlans = async () => {
+        try {
+            const data = await api.getPlans();
+            const sorted = [...data].sort((a, b) => 
+                new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+            setPlans(sorted);
+        } catch (error) {
+            console.error("Failed to load plans:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  const loadPlans = async () => {
-    setLoading(true);
-    try {
-      const data = await api.getPlans();
-      // Sort by latest first (created_at descending)
-      const sorted = [...data].sort((a, b) => 
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
-      setPlans(sorted);
-    } catch (error) {
-      console.error("Failed to load plans:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    usePolling(loadPlans, 10000);
 
   // Status Summary Logic
   const drafts = plans.filter(p => p.status === 'DRAFT').length;

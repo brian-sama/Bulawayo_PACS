@@ -25,7 +25,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
 
   useEffect(() => {
     fetchNotifications();
-    const intervalId = setInterval(fetchNotifications, 30000); // poll every 30s
+    const intervalId = setInterval(fetchNotifications, 10000); // poll every 10s
     return () => clearInterval(intervalId);
   }, []);
 
