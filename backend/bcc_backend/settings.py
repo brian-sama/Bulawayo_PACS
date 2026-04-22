@@ -27,7 +27,10 @@ def env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
-SECRET_KEY = config("SECRET_KEY", default="change-me-in-production")
+SECRET_KEY = config(
+    "SECRET_KEY",
+    default="change-me-in-production-please-replace-with-a-long-random-secret",
+)
 DEBUG = env_bool("DEBUG", default=False)
 
 ALLOWED_HOSTS = csv_config("ALLOWED_HOSTS", "localhost,127.0.0.1")

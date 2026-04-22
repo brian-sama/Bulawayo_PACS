@@ -244,6 +244,29 @@ export const submitDocuments = async (planId: number): Promise<any> =>
 export const getPlanFileUrl = (planId: number | string): string =>
   `${API_BASE}/plans/${planId}/download/`;
 
+export const getPlanAttachmentUrl = (
+  planId: number | string,
+  attachment: 'title-deed' | 'power-of-attorney' | 'structural-cert' | 'receipt-scan' | 'sealed-document'
+): string => `${API_BASE}/plans/${planId}/download-${attachment}/`;
+
+export const getSubmittedDocumentUrl = (docId: number | string): string =>
+  `${API_BASE}/submitted-documents/${docId}/download/`;
+
+export const openAuthenticatedPdf = async (url: string): Promise<string> => {
+  const token = getAccessToken();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Preview request failed (${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const pdfBlob = new Blob([blob], { type: 'application/pdf' });
+  return URL.createObjectURL(pdfBlob);
+};
+
 export const approveFinal = async (
   planId: number,
   signingPassword: string,

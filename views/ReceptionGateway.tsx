@@ -26,6 +26,7 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     const [docVerifyPlans, setDocVerifyPlans] = useState<Plan[]>([]);
     const [loading,        setLoading]        = useState(false);
     const [selectedPlan,   setSelectedPlan]   = useState<Plan | null>(null);
+    const [selectedPlanDetail, setSelectedPlanDetail] = useState<Plan | null>(null);
     const [checklist,      setChecklist]      = useState<Record<string, boolean>>({});
     const [queueTab,       setQueueTab]       = useState<QueueTab>('pre_screen');
 
@@ -42,6 +43,7 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     const [invoiceId,            setInvoiceId]            = useState<number | null>(null);
     const [proformaSubmitting,   setProformaSubmitting]   = useState(false);
     const [viewProforma,         setViewProforma]         = useState<any | null>(null);
+    const [documentActionBusy,   setDocumentActionBusy]   = useState<number | null>(null);
 
     const loadPlans = async () => {
         try {
@@ -50,9 +52,9 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
             const sorted = [...data].sort((a, b) => 
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             );
-            setPlans(sorted.filter((p: any) => ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED'].includes(p.status)));
+            setPlans(sorted.filter((p: any) => p.status === 'PRELIMINARY_SUBMITTED'));
             setProformaPlans(sorted.filter((p: any) => p.status === 'PROFORMA_ISSUED'));
-            setDocVerifyPlans(sorted.filter((p: any) => p.status === 'PAID'));
+            setDocVerifyPlans(sorted.filter((p: any) => ['DOCUMENTS_PENDING_VERIFICATION', 'FINAL_SUBMITTED'].includes(p.status)));
         } catch (e) {
             console.error('Failed to load plans', e);
         } finally {
@@ -61,6 +63,24 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     };
 
     usePolling(loadPlans, 10000);
+
+    useEffect(() => {
+        const loadPlanDetail = async () => {
+            if (!selectedPlan) {
+                setSelectedPlanDetail(null);
+                return;
+            }
+            try {
+                const detail = await api.getPlanDetail(selectedPlan.id);
+                setSelectedPlanDetail(detail);
+            } catch (error) {
+                console.error('Failed to load selected plan detail', error);
+                setSelectedPlanDetail(selectedPlan);
+            }
+        };
+
+        loadPlanDetail();
+    }, [selectedPlan]);
 
     const handlePreScreen = async (approved: boolean) => {
         if (!selectedPlan) return;
@@ -133,11 +153,44 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     };
 
     const allChecksPassed = COMPLIANCE_CHECKS.every(c => checklist[c.id]);
+    const preliminaryReviews = ((selectedPlanDetail as any)?.department_reviews ?? []).filter((review: any) => review.review_stage === 'PRELIMINARY');
+    const valuationReview = preliminaryReviews.find((review: any) => review.department_name === 'Valuation Department');
+    const preliminaryReady = preliminaryReviews.length >= 3 && preliminaryReviews.every((review: any) =>
+        review.officer_status === 'OFFICER_APPROVED'
+    ) && Number(valuationReview?.amount_payable ?? 0) > 0;
+    const submittedDocuments = (selectedPlanDetail as any)?.submitted_documents ?? [];
+
+    const openSecurePdf = async (url: string) => {
+        try {
+            const objectUrl = await api.openAuthenticatedPdf(url);
+            window.open(objectUrl, '_blank', 'noopener,noreferrer');
+        } catch (error: any) {
+            alert(error.message || 'Unable to open the document.');
+        }
+    };
+
+    const handleVerifyDocument = async (docId: number) => {
+        setDocumentActionBusy(docId);
+        try {
+            await api.verifyDocument(docId, 'Verified by reception');
+            await loadPlans();
+            if (selectedPlan) {
+                const detail = await api.getPlanDetail(selectedPlan.id);
+                setSelectedPlanDetail(detail);
+                setSelectedPlan(detail);
+            }
+        } catch (error: any) {
+            alert(`Unable to verify document: ${error.message}`);
+        } finally {
+            setDocumentActionBusy(null);
+        }
+    };
 
     // Active queue list for the sidebar
     const activePlans = queueTab === 'pre_screen' ? plans
                       : queueTab === 'proforma'   ? proformaPlans
                       : docVerifyPlans;
+    const activePlan = selectedPlanDetail ?? selectedPlan;
 
     return (
         <div className="h-[calc(100vh-80px)] flex flex-col bg-slate-50 overflow-hidden">
@@ -261,8 +314,8 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                             <div className="bg-blue-50 border border-blue-100 rounded-2xl p-5 flex gap-4 text-blue-800 shadow-sm animate-fade-in">
                                                 <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center shadow-sm text-2xl shrink-0">📄</div>
                                                 <div>
-                                                    <p className="font-black text-sm uppercase tracking-tight mb-1">Preliminary Submission Recieved</p>
-                                                    <p className="text-sm opacity-80 leading-relaxed italic">Review the floor plans and location details below. Once satisfied, perform the compliance check and issue a proforma invoice.</p>
+                                                    <p className="font-black text-sm uppercase tracking-tight mb-1">Preliminary Submission Received</p>
+                                                    <p className="text-sm opacity-80 leading-relaxed italic">Housing must confirm ownership, Estates must confirm the lease, and Valuation must set the amount payable before reception can issue the proforma.</p>
                                                 </div>
                                             </div>
                                         )}
@@ -280,7 +333,32 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                                 <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center shadow-sm text-2xl shrink-0">✅</div>
                                                 <div>
                                                     <p className="font-black text-sm uppercase tracking-tight mb-1">Payment Verified</p>
-                                                    <p className="text-sm opacity-80 leading-relaxed italic">Scrutiny fees have been cleared. Finalize document verification before pushing to the review pool.</p>
+                                                    <p className="text-sm opacity-80 leading-relaxed italic">Scrutiny fees have been cleared. Wait for the applicant to submit the required documents, then approve them before moving the plan to technical review.</p>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {selectedPlan.status === 'PRELIMINARY_SUBMITTED' && (
+                                            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                                                <h3 className="font-black text-[#003366] mb-4 uppercase text-xs tracking-[0.2em]">Preliminary Verification</h3>
+                                                <div className="space-y-3">
+                                                    {preliminaryReviews.length === 0 ? (
+                                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Waiting for preliminary departmental reviews.</p>
+                                                    ) : preliminaryReviews.map((review: any) => (
+                                                        <div key={review.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                                                            <div>
+                                                                <p className="text-xs font-black text-slate-700">{review.department_name}</p>
+                                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                                                    {review.officer_status?.replace(/_/g, ' ') || 'Pending'}
+                                                                </p>
+                                                            </div>
+                                                            {(review.amount_payable ?? null) !== null && (
+                                                                <p className="text-xs font-black text-emerald-600">
+                                                                    ZWL {Number(review.amount_payable).toLocaleString('en-ZW', { minimumFractionDigits: 2 })}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             </div>
                                         )}
@@ -321,37 +399,79 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                                     Submission Files
                                                 </h3>
                                                 <div className="space-y-3">
-                                                    {(selectedPlan as any).plans_url ? (
-                                                        <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-[#003366]/30 transition-all">
-                                                            <div className="flex items-center gap-3">
-                                                                <div className="bg-[#003366] text-white p-2 rounded-lg text-[10px] font-black uppercase">Plan</div>
-                                                                <span className="text-xs font-bold text-slate-600 truncate max-w-[120px]">Architectural Drawings</span>
-                                                            </div>
-                                                            <button 
-                                                                onClick={() => window.open((selectedPlan as any).plans_url, '_blank')}
-                                                                className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-[#003366] uppercase hover:bg-slate-50 transition shadow-sm"
-                                                            >
-                                                                Open File
-                                                            </button>
+                                                    <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-[#003366]/30 transition-all">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="bg-[#003366] text-white p-2 rounded-lg text-[10px] font-black uppercase">Plan</div>
+                                                            <span className="text-xs font-bold text-slate-600 truncate max-w-[160px]">Architectural Drawings</span>
                                                         </div>
-                                                    ) : (
-                                                        <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-[10px] font-bold text-slate-400 text-center italic">
-                                                            No drawings uploaded
-                                                        </div>
-                                                    )}
+                                                        <button
+                                                            onClick={() => openSecurePdf(api.getPlanFileUrl(selectedPlan.id))}
+                                                            className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-[#003366] uppercase hover:bg-slate-50 transition shadow-sm"
+                                                        >
+                                                            Open File
+                                                        </button>
+                                                    </div>
 
                                                     <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-[#003366]/30 transition-all">
                                                         <div className="flex items-center gap-3">
                                                             <div className="bg-blue-600 text-white p-2 rounded-lg text-[10px] font-black uppercase">Deed</div>
                                                             <span className="text-xs font-bold text-slate-600 truncate max-w-[120px]">Ownership Docs</span>
                                                         </div>
-                                                        <button 
-                                                            onClick={() => selectedPlan.title_deed ? window.open(selectedPlan.title_deed, '_blank') : alert("No ownership document uploaded.")}
+                                                        <button
+                                                            onClick={() => activePlan?.title_deed ? openSecurePdf(api.getPlanAttachmentUrl(selectedPlan.id, 'title-deed')) : alert("No ownership document uploaded.")}
                                                             className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-[#003366] uppercase hover:bg-slate-50 transition shadow-sm"
                                                         >
                                                             Open File
                                                         </button>
                                                     </div>
+
+                                                    {activePlan?.power_of_attorney && (
+                                                        <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-[#003366]/30 transition-all">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="bg-indigo-600 text-white p-2 rounded-lg text-[10px] font-black uppercase">PoA</div>
+                                                                <span className="text-xs font-bold text-slate-600 truncate max-w-[120px]">Power of Attorney</span>
+                                                            </div>
+                                                            <button
+                                                                onClick={() => openSecurePdf(api.getPlanAttachmentUrl(selectedPlan.id, 'power-of-attorney'))}
+                                                                className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-[#003366] uppercase hover:bg-slate-50 transition shadow-sm"
+                                                            >
+                                                                Open File
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {submittedDocuments.map((doc: any) => (
+                                                        <div key={doc.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group hover:border-[#003366]/30 transition-all">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className={`${doc.is_verified ? 'bg-emerald-600' : 'bg-amber-500'} text-white p-2 rounded-lg text-[10px] font-black uppercase`}>
+                                                                    {doc.is_verified ? 'OK' : 'Doc'}
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-xs font-bold text-slate-600 block">{doc.label}</span>
+                                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                                                        {doc.is_verified ? 'Verified' : 'Awaiting Reception Approval'}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={() => openSecurePdf(api.getSubmittedDocumentUrl(doc.id))}
+                                                                    className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-[#003366] uppercase hover:bg-slate-50 transition shadow-sm"
+                                                                >
+                                                                    View
+                                                                </button>
+                                                                {!doc.is_verified && (
+                                                                    <button
+                                                                        onClick={() => handleVerifyDocument(doc.id)}
+                                                                        disabled={documentActionBusy === doc.id}
+                                                                        className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-[10px] font-black uppercase hover:bg-emerald-700 transition shadow-sm disabled:opacity-50"
+                                                                    >
+                                                                        {documentActionBusy === doc.id ? '...' : 'Approve'}
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             </div>
                                         </div>
@@ -426,11 +546,11 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                         {selectedPlan.status === 'PRELIMINARY_SUBMITTED' ? (
                                             <button
                                                 onClick={() => setShowProformaGenerator(true)}
-                                                disabled={!allChecksPassed}
+                                                disabled={!allChecksPassed || !preliminaryReady}
                                                 className={`flex-1 sm:flex-none px-10 py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl transition-all flex items-center justify-center gap-3 active:scale-95
-                                                    ${allChecksPassed ? 'bg-[#003366] text-white hover:bg-black hover:translate-y-[-2px]' : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'}`}
+                                                    ${allChecksPassed && preliminaryReady ? 'bg-[#003366] text-white hover:bg-black hover:translate-y-[-2px]' : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'}`}
                                             >
-                                                <span>Issue Proforma</span>
+                                                <span>{preliminaryReady ? 'Issue Proforma' : 'Waiting for Preliminary Checks'}</span>
                                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                                             </button>
                                         ) : selectedPlan.status === 'PROFORMA_ISSUED' ? (
@@ -452,7 +572,16 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                                 <span>Confirm Payment</span>
                                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
                                             </button>
-                                        ) : selectedPlan.status === 'PAID' ? (
+                                        ) : selectedPlan.status === 'DOCUMENTS_PENDING_VERIFICATION' ? (
+                                            <button
+                                                disabled={submittedDocuments.length === 0 || submittedDocuments.some((doc: any) => !doc.is_verified)}
+                                                className={`flex-1 sm:flex-none px-10 py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl transition-all flex items-center justify-center gap-3 active:scale-95
+                                                    ${submittedDocuments.length > 0 && submittedDocuments.every((doc: any) => doc.is_verified) ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'}`}
+                                            >
+                                                <span>Approve Submitted Documents Above</span>
+                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
+                                            </button>
+                                        ) : selectedPlan.status === 'FINAL_SUBMITTED' ? (
                                             <button
                                                 onClick={() => api.submitToReview(selectedPlan.id).then(() => { alert('Verified! Moved to review pool.'); loadPlans(); setSelectedPlan(null); }).catch(e => alert(e.message))}
                                                 className="flex-1 sm:flex-none px-10 py-4 bg-[#003366] text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl hover:bg-black transition transform active:scale-95 flex items-center justify-center gap-3"

@@ -74,15 +74,8 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onViewPlan }) 
       setViewingInvoice(latest);
 
       // Fetch PDF as blob so we bypass X-Frame-Options
-      const token = api.getAccessToken();
-      const res = await fetch(`/api/proforma-invoices/${latest.id}/download/`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const pdfBlob = new Blob([blob], { type: 'application/pdf' });
-        setInvoiceBlobUrl(URL.createObjectURL(pdfBlob));
-      }
+      const pdfUrl = await api.openAuthenticatedPdf(`/api/proforma-invoices/${latest.id}/download/`);
+      setInvoiceBlobUrl(pdfUrl);
     } catch (e: any) {
       alert(`Error loading invoice: ${e.message}`);
     } finally {
@@ -155,7 +148,7 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onViewPlan }) 
                       <span className="text-[10px] text-slate-400 ml-2">· {p.stand_addr}</span>
                     </div>
                     <button
-                      onClick={e => { e.stopPropagation(); handleViewInvoice(p.id); }}
+                      onClick={e => { e.stopPropagation(); handleViewInvoice(p); }}
                       className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center gap-2"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>

@@ -22,15 +22,26 @@ export type PlanStatus = keyof typeof PlanStatusValues | string;
 
 export interface DepartmentReview {
   id: number;
-  plan: number;
+  plan?: number;
+  plan_pk?: number;
+  plan_version?: number;
   department: number;
   department_name: string;
-  reviewer?: number;
-  reviewer_name?: string;
-  status: 'PENDING' | 'APPROVED' | 'CORRECTIONS_REQUIRED' | 'REJECTED';
-  comments: string;
-  created_at: string;
-  updated_at: string;
+  review_stage?: 'PRELIMINARY' | 'TECHNICAL';
+  amount_payable?: number | null;
+  officer?: number | null;
+  officer_name?: string;
+  officer_status?: string;
+  officer_comment?: string;
+  officer_acted_at?: string | null;
+  head?: number | null;
+  head_name?: string;
+  head_status?: string;
+  head_comment?: string;
+  head_acted_at?: string | null;
+  assigned_at?: string;
+  deadline?: string | null;
+  escalated?: boolean;
 }
 
 export interface DepartmentComment {
@@ -51,6 +62,7 @@ export interface DepartmentComment {
 export interface Plan {
   id: number;
   plan_id: string;
+  plan_number?: string | null;
   client: number;
   client_name: string;
   stand: number;
@@ -59,6 +71,12 @@ export interface Plan {
   architect_name: string;
   category: 'RESIDENTIAL' | 'COMMERCIAL' | 'INDUSTRIAL' | 'MIXED';
   status: PlanStatus;
+  suburb?: string;
+  title_deed?: string | null;
+  power_of_attorney?: string | null;
+  structural_cert?: string | null;
+  receipt_scan?: string | null;
+  sealed_document?: string | null;
   declared_area?: number;
   calculated_area?: number;
   development_description?: string;
@@ -66,8 +84,12 @@ export interface Plan {
   created_at: string;
   updated_at: string;
   flag_count: number;
-  progress: number;
-  lastUpdate: string;
+  progress?: number;
+  lastUpdate?: string;
+  date_submitted?: string;
+  versions?: any[];
+  department_reviews?: DepartmentReview[];
+  submitted_documents?: any[];
 }
 
 export interface Flag {

@@ -3,13 +3,16 @@ from plans.models import Department
 
 
 DEPARTMENTS = [
-    {'name': 'Town Planning',        'is_required': True,  'display_order': 1},
-    {'name': 'Building Inspections', 'is_required': True,  'display_order': 2},
-    {'name': 'Engineering',          'is_required': True,  'display_order': 3},
-    {'name': 'Environmental Health', 'is_required': True,  'display_order': 4},
-    {'name': 'Fire & Safety',        'is_required': True,  'display_order': 5},
-    {'name': 'Water & Sanitation',   'is_required': False, 'display_order': 6},
-    {'name': 'Electrical',           'is_required': False, 'display_order': 7},
+    {'name': 'Housing Office',       'is_required': True,  'display_order': 1},
+    {'name': 'Estates Department',   'is_required': True,  'display_order': 2},
+    {'name': 'Valuation Department', 'is_required': True,  'display_order': 3},
+    {'name': 'Town Planning',        'is_required': True,  'display_order': 4},
+    {'name': 'Building Inspections', 'is_required': True,  'display_order': 5},
+    {'name': 'Engineering',          'is_required': True,  'display_order': 6},
+    {'name': 'Environmental Health', 'is_required': True,  'display_order': 7},
+    {'name': 'Fire & Safety',        'is_required': True,  'display_order': 8},
+    {'name': 'Water & Sanitation',   'is_required': False, 'display_order': 9},
+    {'name': 'Electrical',           'is_required': False, 'display_order': 10},
 ]
 
 

@@ -201,6 +201,7 @@ class DepartmentReviewSerializer(serializers.ModelSerializer):
         model = DepartmentReview
         fields = [
             'id', 'plan_version', 'plan_id', 'plan_pk', 'version_number', 'plan_file',
+            'review_stage', 'amount_payable',
             'department', 'department_name',
             'officer', 'officer_name', 'officer_status', 'officer_comment', 'officer_acted_at',
             'head', 'head_name', 'head_status', 'head_comment', 'head_acted_at',
@@ -414,5 +415,9 @@ class PlanDetailSerializer(PlanListSerializer):
         current_version = obj.get_current_version()
         if not current_version:
             return []
-        reviews = obj.get_current_reviews()
+        request = self.context.get('request')
+        review_stage = None
+        if request and getattr(request.user, 'role', None) == 'RECEPTION':
+            review_stage = 'PRELIMINARY'
+        reviews = obj.get_current_reviews(review_stage)
         return DepartmentReviewSerializer(reviews, many=True, context=self.context).data

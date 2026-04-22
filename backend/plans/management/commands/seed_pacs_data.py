@@ -9,14 +9,16 @@ class Command(BaseCommand):
 
         # 1. Create Departments (if not existing)
         depts_data = [
-            {'name': 'Architectural Section', 'code': 'ARCH', 'order': 1},
-            {'name': 'Structural Section', 'code': 'STRUCT', 'order': 2},
-            {'name': 'Health Department', 'code': 'HEALTH', 'order': 3},
-            {'name': 'Fire Brigade', 'code': 'FIRE', 'order': 4},
-            {'name': 'Engineering Services', 'code': 'ENG', 'order': 5},
-            {'name': 'Town Planning', 'code': 'PLAN', 'order': 6},
-            {'name': 'Water & Sewerage', 'code': 'WATER', 'order': 7},
-            {'name': 'Estates Department', 'code': 'ESTATE', 'order': 8},
+            {'name': 'Housing Office', 'code': 'HOUSING', 'order': 1},
+            {'name': 'Estates Department', 'code': 'ESTATES', 'order': 2},
+            {'name': 'Valuation Department', 'code': 'VALUATION', 'order': 3},
+            {'name': 'Architectural Section', 'code': 'ARCH', 'order': 4},
+            {'name': 'Structural Section', 'code': 'STRUCT', 'order': 5},
+            {'name': 'Health Department', 'code': 'HEALTH', 'order': 6},
+            {'name': 'Fire Brigade', 'code': 'FIRE', 'order': 7},
+            {'name': 'Engineering Services', 'code': 'ENG', 'order': 8},
+            {'name': 'Town Planning', 'code': 'PLAN', 'order': 9},
+            {'name': 'Water & Sewerage', 'code': 'WATER', 'order': 10},
         ]
 
         depts = {}

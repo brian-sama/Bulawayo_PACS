@@ -32,6 +32,15 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
         }
     };
 
+    const handleOpenApprovedCopy = async () => {
+        try {
+            const url = await api.openAuthenticatedPdf(api.getPlanAttachmentUrl(plan.id, 'sealed-document'));
+            window.open(url, '_blank', 'noopener,noreferrer');
+        } catch {
+            alert("Document not ready.");
+        }
+    };
+
     const steps = [
         { id: 'RECEPTION', label: 'Reception Validation', status: 'COMPLETE' },
         { id: 'POOL', label: 'Technical Circulation', status: plan.status === 'REVIEW_POOL' || plan.status === 'IN_REVIEW' ? 'ACTIVE' : (plan.status === 'APPROVED' ? 'COMPLETE' : 'PENDING') },
@@ -170,7 +179,7 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
                                     </div>
                                 </div>
                                 <button
-                                    onClick={() => (plan as any).sealed_document ? window.open((plan as any).sealed_document, '_blank') : alert("Document not ready.")}
+                                    onClick={handleOpenApprovedCopy}
                                     className="p-3 bg-blue-600 text-white rounded-xl shadow-lg hover:bg-black transition"
                                 >
                                     Download Official Copy

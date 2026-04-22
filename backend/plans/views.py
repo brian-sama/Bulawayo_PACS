@@ -1,5 +1,6 @@
 import hashlib
 import fitz  # PyMuPDF
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from django.core.files.base import ContentFile
 from django.http import FileResponse
@@ -15,6 +16,7 @@ from .models import (
     PlanVersion, Comment, Flag, Receipt, Approval, AuditLog,
     PlanStatus, UserRole, FlagType, FlagCategory,
     CategoryDepartmentMapping, DepartmentReview, DepartmentReviewStatus,
+    DepartmentReviewStage,
     ChecklistTemplate, RequiredDocument, SubmittedDocument,
     ProformaInvoice, ProformaLineItem, PaymentReceipt, ProformaInvoiceStatus,
     FinalDecision, Notification,
@@ -50,12 +52,72 @@ def log_action(user, action, target_model, target_id, old_value=None, new_value=
     )
 
 
+PRELIMINARY_DEPARTMENTS = (
+    ('Housing Office', 'HOUSING', 1),
+    ('Estates Department', 'ESTATES', 2),
+    ('Valuation Department', 'VALUATION', 3),
+)
+
+
+def _get_or_create_preliminary_departments():
+    departments = []
+    for name, code, order in PRELIMINARY_DEPARTMENTS:
+        dept, _ = Department.objects.get_or_create(
+            name=name,
+            defaults={'code': code, 'display_order': order, 'is_required': True},
+        )
+        updated = False
+        if not dept.code:
+            dept.code = code
+            updated = True
+        if dept.display_order != order:
+            dept.display_order = order
+            updated = True
+        if not dept.is_required:
+            dept.is_required = True
+            updated = True
+        if updated:
+            dept.save(update_fields=['code', 'display_order', 'is_required'])
+        departments.append(dept)
+    return departments
+
+
+def _preliminary_reviews_complete(plan):
+    reviews = plan.get_current_reviews(DepartmentReviewStage.PRELIMINARY)
+    if reviews.count() < len(PRELIMINARY_DEPARTMENTS):
+        return False
+
+    valuation_seen = False
+    for review in reviews:
+        if review.officer_status != DepartmentReviewStatus.OFFICER_APPROVED:
+            return False
+        code = (review.department.code or '').upper()
+        if code == 'VALUATION':
+            valuation_seen = True
+            if review.amount_payable is None or review.amount_payable <= 0:
+                return False
+    return valuation_seen
+
+
+def _stream_field_file(instance, field_name, filename):
+    file_field = getattr(instance, field_name, None)
+    if not file_field:
+        return Response({'error': 'No file found.'}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        file_handle = open(file_field.path, 'rb')
+        response = FileResponse(file_handle, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        return response
+    except FileNotFoundError:
+        return Response({'error': 'File not found on server.'}, status=status.HTTP_404_NOT_FOUND)
+
+
 def _check_and_advance_to_final_decision(plan):
     """
     After a department review is submitted, check if all departments are resolved.
     If every review is head-confirmed, transition plan to AWAITING_FINAL_DECISION.
     """
-    reviews = plan.get_current_reviews()
+    reviews = plan.get_current_reviews(DepartmentReviewStage.TECHNICAL)
     if not reviews.exists():
         return
 
@@ -274,8 +336,13 @@ class PlanViewSet(viewsets.ModelViewSet):
             return qs.filter(client=user)
 
         if user.role == UserRole.RECEPTION:
-            # Reception sees all non-draft, non-approved plans
-            return qs.exclude(status__in=[PlanStatus.APPROVED])
+            # Reception only sees plans up to the handoff into technical review.
+            return qs.exclude(status__in=[
+                PlanStatus.REVIEW_POOL,
+                PlanStatus.IN_REVIEW,
+                PlanStatus.AWAITING_FINAL_DECISION,
+                PlanStatus.APPROVED,
+            ])
 
         if user.role == UserRole.DEPT_OFFICER:
             if user.department:
@@ -427,7 +494,7 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         last = plan.versions.order_by('-version_number').first()
         next_num = (last.version_number + 1) if last else 1
-        PlanVersion.objects.create(
+        version = PlanVersion.objects.create(
             plan=plan, version_number=next_num,
             file=plan_file, uploaded_by=request.user,
             notes='Preliminary submission'
@@ -439,20 +506,37 @@ class PlanViewSet(viewsets.ModelViewSet):
         plan.submitted_at = timezone.now()
         plan.save(update_fields=['status', 'submission_type', 'submitted_at'])
 
+        preliminary_departments = _get_or_create_preliminary_departments()
+        for dept in preliminary_departments:
+            DepartmentReview.objects.get_or_create(
+                plan_version=version,
+                department=dept,
+                review_stage=DepartmentReviewStage.PRELIMINARY,
+                defaults={
+                    'officer_status': DepartmentReviewStatus.PENDING,
+                    'head_status': DepartmentReviewStatus.PENDING,
+                },
+            )
+
         log_action(request.user, 'PRELIMINARY_SUBMITTED', 'Plan', plan.id,
                    old_value={'status': old}, new_value={'status': plan.status},
                    request=request)
 
-        # Notify Reception
+        # Notify preliminary verification departments
         from django.contrib.auth import get_user_model
         User = get_user_model()
-        receptionists = User.objects.filter(role='RECEPTION', is_active=True)
-        for rec in receptionists:
-            dispatch_notification(
-                rec, 'PLAN_SUBMITTED',
-                f'A new preliminary plan ({plan.plan_id}) has been submitted for pre-screening.',
-                subject=f'New Submission: {plan.plan_id}'
+        for dept in preliminary_departments:
+            officers = User.objects.filter(
+                role__in=[UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD],
+                department=dept,
+                is_active=True,
             )
+            for officer in officers:
+                dispatch_notification(
+                    officer, 'PRELIMINARY_REVIEW_REQUESTED',
+                    f'Plan {plan.plan_id} requires preliminary verification by {dept.name}.',
+                    subject=f'Preliminary Review Required: {plan.plan_id}'
+                )
 
         return Response({'status': plan.status, 'plan_id': plan.plan_id})
 
@@ -481,7 +565,22 @@ class PlanViewSet(viewsets.ModelViewSet):
         )
 
         old = plan.status
-        plan.status = PlanStatus.SUBMITTED
+        next_status = PlanStatus.SUBMITTED
+        if plan.submission_type == 'PRELIMINARY':
+            next_status = PlanStatus.PRELIMINARY_SUBMITTED
+            preliminary_departments = _get_or_create_preliminary_departments()
+            for dept in preliminary_departments:
+                DepartmentReview.objects.get_or_create(
+                    plan_version=version,
+                    department=dept,
+                    review_stage=DepartmentReviewStage.PRELIMINARY,
+                    defaults={
+                        'officer_status': DepartmentReviewStatus.PENDING,
+                        'head_status': DepartmentReviewStatus.PENDING,
+                    },
+                )
+
+        plan.status = next_status
         plan.save(update_fields=['status'])
 
         log_action(request.user, 'PLAN_RESUBMITTED', 'Plan', plan.id,
@@ -496,6 +595,8 @@ class PlanViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def reject_pre_screen(self, request, pk=None):
         """Reception rejects plan during pre-screening; mandatory reason required."""
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can reject a preliminary submission.'}, status=403)
         plan = self.get_object()
         if plan.status not in [PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED,
                                 PlanStatus.PRELIMINARY_SUBMITTED]:
@@ -545,9 +646,10 @@ class PlanViewSet(viewsets.ModelViewSet):
         Reception verifies final docs and submits plan to the department review pool.
         Creates DepartmentReview records for all required departments.
         """
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can move plans to technical review.'}, status=403)
         plan = self.get_object()
-        allowed = [PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED,
-                   PlanStatus.VERIFIED_BY_RECEPTION, PlanStatus.FINAL_SUBMITTED]
+        allowed = [PlanStatus.FINAL_SUBMITTED]
         if plan.status not in allowed:
             return Response({'error': f'Plan must be in one of {allowed} to submit to review.'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -576,6 +678,7 @@ class PlanViewSet(viewsets.ModelViewSet):
             _, created = DepartmentReview.objects.get_or_create(
                 plan_version=current_version,
                 department=dept,
+                review_stage=DepartmentReviewStage.TECHNICAL,
                 defaults={
                     'officer_status': DepartmentReviewStatus.PENDING,
                     'head_status': DepartmentReviewStatus.PENDING
@@ -619,14 +722,36 @@ class PlanViewSet(viewsets.ModelViewSet):
         current_version = plan.get_current_version()
         if not current_version or not current_version.file:
             return Response({'error': 'No file found for this plan.'}, status=status.HTTP_404_NOT_FOUND)
-        try:
-            file_handle = open(current_version.file.path, 'rb')
-            response = FileResponse(file_handle, content_type='application/pdf')
-            filename = f'{plan.plan_id}_v{current_version.version_number}.pdf'
-            response['Content-Disposition'] = f'inline; filename="{filename}"'
-            return response
-        except FileNotFoundError:
-            return Response({'error': 'File not found on server.'}, status=status.HTTP_404_NOT_FOUND)
+        filename = f'{plan.plan_id}_v{current_version.version_number}.pdf'
+        return _stream_field_file(current_version, 'file', filename)
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-title-deed')
+    def download_title_deed(self, request, pk=None):
+        plan = self.get_object()
+        return _stream_field_file(plan, 'title_deed', f'{plan.plan_id}_title_deed.pdf')
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-power-of-attorney')
+    def download_power_of_attorney(self, request, pk=None):
+        plan = self.get_object()
+        return _stream_field_file(plan, 'power_of_attorney', f'{plan.plan_id}_power_of_attorney.pdf')
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-structural-cert')
+    def download_structural_cert(self, request, pk=None):
+        plan = self.get_object()
+        return _stream_field_file(plan, 'structural_cert', f'{plan.plan_id}_structural_cert.pdf')
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-receipt-scan')
+    def download_receipt_scan(self, request, pk=None):
+        plan = self.get_object()
+        return _stream_field_file(plan, 'receipt_scan', f'{plan.plan_id}_receipt_scan.pdf')
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-sealed-document')
+    def download_sealed_document(self, request, pk=None):
+        plan = self.get_object()
+        approval = getattr(plan, 'approval', None)
+        if not approval:
+            return Response({'error': 'No sealed document found.'}, status=status.HTTP_404_NOT_FOUND)
+        return _stream_field_file(approval, 'sealed_document', f'{plan.plan_id}_approved.pdf')
 
     # ── Auto-checks ───────────────────────────────────────────────────────
 
@@ -700,7 +825,10 @@ class PlanViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Invalid signing password.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         # Verify all department heads have confirmed — uses DepartmentReview, NOT Comment votes
-        required_reviews = DepartmentReview.objects.filter(plan_version=current_version)
+        required_reviews = DepartmentReview.objects.filter(
+            plan_version=current_version,
+            review_stage=DepartmentReviewStage.TECHNICAL,
+        )
         if not required_reviews.exists():
             return Response({'error': 'No department reviews found for current version.'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -788,7 +916,11 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             return DepartmentReview.objects.filter(
                 department=user.department
             ).select_related('plan_version__plan', 'department', 'officer', 'head')
-        if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER, UserRole.RECEPTION]:
+        if user.role == UserRole.RECEPTION:
+            return DepartmentReview.objects.filter(
+                review_stage=DepartmentReviewStage.PRELIMINARY
+            ).select_related('plan_version__plan', 'department', 'officer', 'head')
+        if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER]:
             return DepartmentReview.objects.all().select_related(
                 'plan_version__plan', 'department', 'officer', 'head'
             )
@@ -820,7 +952,7 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             )
 
         if role == 'OFFICER':
-            if user.role not in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD, UserRole.ADMIN]:
+            if user.role not in [UserRole.DEPT_OFFICER, UserRole.ADMIN]:
                 return Response({'error': 'Role mismatch.'}, status=403)
 
             status_map = {
@@ -831,23 +963,40 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             if decision not in status_map:
                 return Response({'error': f'Invalid status. Valid options: {list(status_map.keys())}'}, status=400)
 
+            amount_payable = review.amount_payable
+            if review.review_stage == DepartmentReviewStage.PRELIMINARY:
+                raw_amount = request.data.get('amount_payable')
+                if (review.department.code or '').upper() == 'VALUATION':
+                    if raw_amount in [None, '']:
+                        return Response(
+                            {'error': 'Valuation must provide amount_payable before approval.'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    try:
+                        amount_payable = Decimal(str(raw_amount))
+                    except (InvalidOperation, TypeError):
+                        return Response({'error': 'amount_payable must be a valid number.'}, status=400)
+                    if amount_payable <= 0:
+                        return Response({'error': 'amount_payable must be greater than zero.'}, status=400)
+
             review.officer         = user
             review.officer_status  = status_map[decision]
             review.officer_comment = comment
+            review.amount_payable  = amount_payable
             review.officer_acted_at = timezone.now()
             review.save()
 
-            # Notify Department Head
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
             plan = review.plan_version.plan
-            heads = User.objects.filter(role='DEPT_HEAD', department=review.department, is_active=True)
-            for head in heads:
-                dispatch_notification(
-                    head, 'REVIEW_COMPLETED',
-                    f'Officer {user.full_name or user.username} has completed the {decision} review for plan {plan.plan_id}.',
-                    subject=f'Officer Review Complete: {plan.plan_id}'
-                )
+            if review.review_stage == DepartmentReviewStage.TECHNICAL:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                heads = User.objects.filter(role='DEPT_HEAD', department=review.department, is_active=True)
+                for head in heads:
+                    dispatch_notification(
+                        head, 'REVIEW_COMPLETED',
+                        f'Officer {user.full_name or user.username} has completed the {decision} review for plan {plan.plan_id}.',
+                        subject=f'Officer Review Complete: {plan.plan_id}'
+                    )
 
         elif role == 'HEAD':
             if user.role not in [UserRole.DEPT_HEAD, UserRole.ADMIN]:
@@ -882,8 +1031,28 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
                 subject=f'Department Decision — {plan.plan_id}'
             )
 
-        # Check if all departments are resolved and advance plan status
-        _check_and_advance_to_final_decision(plan)
+        if review.review_stage == DepartmentReviewStage.PRELIMINARY:
+            if decision in ('REJECTED', 'CORRECTIONS'):
+                plan.status = PlanStatus.CORRECTIONS_REQUIRED
+                plan.save(update_fields=['status'])
+                dispatch_notification(
+                    plan.client, 'PRELIMINARY_CORRECTIONS_REQUIRED',
+                    f'{review.department.name} requested corrections on your preliminary submission {plan.plan_id}.',
+                    subject=f'Corrections Required — {plan.plan_id}'
+                )
+            elif role == 'OFFICER' and _preliminary_reviews_complete(plan):
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                receptionists = User.objects.filter(role=UserRole.RECEPTION, is_active=True)
+                for rec in receptionists:
+                    dispatch_notification(
+                        rec, 'PRELIMINARY_READY_FOR_PROFORMA',
+                        f'Plan {plan.plan_id} has completed Housing, Estates, and Valuation verification and is ready for proforma issuance.',
+                        subject=f'Preliminary Complete: {plan.plan_id}'
+                    )
+        else:
+            # Check if all departments are resolved and advance plan status
+            _check_and_advance_to_final_decision(plan)
 
         return Response({
             'status': 'Success',
@@ -995,6 +1164,13 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You can only upload documents for your own plans.")
         serializer.save()
 
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
+    def download(self, request, pk=None):
+        doc = self.get_object()
+        safe_label = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in doc.label.lower())
+        filename = f'{doc.plan.plan_id}_{safe_label or "document"}.pdf'
+        return _stream_field_file(doc, 'file', filename)
+
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def verify(self, request, pk=None):
         """
@@ -1002,6 +1178,8 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
         When ALL required (non-optional) documents for the plan are verified,
         automatically assigns the plan number and moves the plan to REVIEW_POOL.
         """
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can verify submitted documents.'}, status=403)
         doc = self.get_object()
         comment = request.data.get('comment', '').strip()
 
@@ -1048,6 +1226,8 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def reject_document(self, request, pk=None):
         """Receptionist rejects a document and requests re-upload from applicant."""
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can reject submitted documents.'}, status=403)
         doc = self.get_object()
         reason = request.data.get('reason', '').strip()
         if len(reason) < 10:
@@ -1098,6 +1278,8 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def create(self, request, *args, **kwargs):
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can issue proforma invoices.'}, status=403)
         plan_id = request.data.get('plan')
         if not plan_id:
             return Response({'error': 'plan field is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1107,11 +1289,22 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
         except Plan.DoesNotExist:
             return Response({'error': 'Plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if plan.status not in [PlanStatus.PRELIMINARY_SUBMITTED, PlanStatus.SUBMITTED]:
+        if plan.status != PlanStatus.PRELIMINARY_SUBMITTED:
             return Response(
-                {'error': 'Proforma can only be issued for PRELIMINARY_SUBMITTED or SUBMITTED plans.'},
+                {'error': 'Proforma can only be issued for PRELIMINARY_SUBMITTED plans.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if not _preliminary_reviews_complete(plan):
+            return Response(
+                {'error': 'Housing, Estates, and Valuation must all approve the preliminary submission before issuing a proforma.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        valuation_review = plan.get_current_reviews(DepartmentReviewStage.PRELIMINARY).filter(
+            department__code='VALUATION'
+        ).first()
+        expected_amount = valuation_review.amount_payable if valuation_review else None
 
         invoice = ProformaInvoice.objects.create(
             plan=plan,
@@ -1121,6 +1314,28 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
 
         # Create line items
         line_items_data = request.data.get('line_items', [])
+        if not line_items_data and expected_amount:
+            line_items_data = [{
+                'label': 'Preliminary valuation fee',
+                'vote_no': '',
+                'amount_zwl': expected_amount,
+                'amount_usd': 0,
+                'is_rates_payment': False,
+            }]
+
+        if expected_amount and line_items_data:
+            total_zwl = Decimal('0')
+            for item in line_items_data:
+                try:
+                    total_zwl += Decimal(str(item.get('amount_zwl', 0) or 0))
+                except (InvalidOperation, TypeError):
+                    return Response({'error': 'Each line item amount_zwl must be a valid number.'}, status=400)
+            if total_zwl != expected_amount:
+                return Response(
+                    {'error': f'Line item total must match the valuation amount of {expected_amount} ZWL.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         for item in line_items_data:
             ProformaLineItem.objects.create(
                 invoice=invoice,
@@ -1214,6 +1429,8 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
         Receptionist confirms payment by recording the receipt number.
         receipt_number must be unique across all PaymentReceipt records.
         """
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can confirm payments.'}, status=403)
         invoice = self.get_object()
 
         receipt_number = request.data.get('receipt_number', '').strip()

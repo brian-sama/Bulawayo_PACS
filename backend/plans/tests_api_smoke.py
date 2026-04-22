@@ -14,6 +14,7 @@ from .models import (
     ChecklistTemplate,
     Department,
     DepartmentReview,
+    DepartmentReviewStage,
     Notification,
     Plan,
     PlanStatus,
@@ -39,6 +40,9 @@ class ApiSmokeTests(APITestCase):
 
     def setUp(self):
         self.department = Department.objects.create(name="Planning", code="PLAN", display_order=1)
+        self.housing_department = Department.objects.create(name="Housing Office", code="HOUSING", display_order=2)
+        self.estates_department = Department.objects.create(name="Estates Department", code="ESTATES", display_order=3)
+        self.valuation_department = Department.objects.create(name="Valuation Department", code="VALUATION", display_order=4)
 
         self.client_user = User.objects.create_user(
             username="client",
@@ -62,6 +66,30 @@ class ApiSmokeTests(APITestCase):
             full_name="Officer User",
             role=UserRole.DEPT_OFFICER,
             department=self.department,
+        )
+        self.housing_user = User.objects.create_user(
+            username="housing",
+            email="housing@example.com",
+            password="HousingPass123!",
+            full_name="Housing Officer",
+            role=UserRole.DEPT_OFFICER,
+            department=self.housing_department,
+        )
+        self.estates_user = User.objects.create_user(
+            username="estates",
+            email="estates@example.com",
+            password="EstatesPass123!",
+            full_name="Estates Officer",
+            role=UserRole.DEPT_OFFICER,
+            department=self.estates_department,
+        )
+        self.valuation_user = User.objects.create_user(
+            username="valuation",
+            email="valuation@example.com",
+            password="ValuationPass123!",
+            full_name="Valuation Officer",
+            role=UserRole.DEPT_OFFICER,
+            department=self.valuation_department,
         )
         self.head_user = User.objects.create_user(
             username="head",
@@ -158,6 +186,36 @@ class ApiSmokeTests(APITestCase):
             format="multipart",
         )
         self.assertEqual(prelim_response.status_code, status.HTTP_200_OK)
+
+        preliminary_reviews = DepartmentReview.objects.filter(
+            plan_version__plan_id=plan_id,
+            review_stage=DepartmentReviewStage.PRELIMINARY,
+        )
+        self.assertEqual(preliminary_reviews.count(), 3)
+
+        self.authenticate(self.housing_user)
+        housing_response = self.client.post(
+            f"/api/department-reviews/{preliminary_reviews.get(department=self.housing_department).id}/evaluate/",
+            {"role": "OFFICER", "status": "APPROVED", "comment": ""},
+            format="json",
+        )
+        self.assertEqual(housing_response.status_code, status.HTTP_200_OK)
+
+        self.authenticate(self.estates_user)
+        estates_response = self.client.post(
+            f"/api/department-reviews/{preliminary_reviews.get(department=self.estates_department).id}/evaluate/",
+            {"role": "OFFICER", "status": "APPROVED", "comment": ""},
+            format="json",
+        )
+        self.assertEqual(estates_response.status_code, status.HTTP_200_OK)
+
+        self.authenticate(self.valuation_user)
+        valuation_response = self.client.post(
+            f"/api/department-reviews/{preliminary_reviews.get(department=self.valuation_department).id}/evaluate/",
+            {"role": "OFFICER", "status": "APPROVED", "comment": "", "amount_payable": "100.00"},
+            format="json",
+        )
+        self.assertEqual(valuation_response.status_code, status.HTTP_200_OK)
 
         download_plan_response = self.client.get(f"/api/plans/{plan_id}/download/")
         self.assertEqual(download_plan_response.status_code, status.HTTP_200_OK)

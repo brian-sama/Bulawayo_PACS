@@ -61,17 +61,9 @@ export const App: React.FC = () => {
   const [justLoggedOut, setJustLoggedOut] = useState(false);
 
   useEffect(() => {
-    // If we just loaded and pacs_show_login is set, it means we logged out or were forced here
     if (sessionStorage.getItem('pacs_show_login') === 'true' && !user) {
       setShowLogin(true);
       setJustLoggedOut(true);
-      // After 8 seconds, automatically return to landing page
-      const timer = setTimeout(() => {
-        sessionStorage.removeItem('pacs_show_login');
-        setShowLogin(false);
-        setJustLoggedOut(false);
-      }, 8000);
-      return () => clearTimeout(timer);
     }
   }, [user]);
 
@@ -163,7 +155,7 @@ export const App: React.FC = () => {
           <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-white/80 backdrop-blur px-6 py-3 rounded-2xl shadow-2xl border border-slate-100 animate-in fade-in slide-in-from-bottom-4 duration-500 z-50">
             <p className="text-[10px] font-black text-[#003366] uppercase tracking-widest flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-              Securely Logged Out. Returning to landing page shortly...
+              Securely Logged Out. Sign in again or go back to the landing page.
             </p>
           </div>
         )}

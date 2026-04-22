@@ -364,11 +364,14 @@ class Plan(models.Model):
 
         return 'BLUE', 'IN_REVIEW'
 
-    def get_current_reviews(self):
+    def get_current_reviews(self, review_stage='TECHNICAL'):
         current_version = self.get_current_version()
         if not current_version:
             return DepartmentReview.objects.none()
-        return DepartmentReview.objects.filter(plan_version=current_version)
+        qs = DepartmentReview.objects.filter(plan_version=current_version)
+        if review_stage:
+            qs = qs.filter(review_stage=review_stage)
+        return qs
 
     @property
     def status_color(self):
@@ -525,6 +528,11 @@ class DepartmentReviewStatus(models.TextChoices):
     HEAD_REJECTED       = 'HEAD_REJECTED',       'Head Rejected'
 
 
+class DepartmentReviewStage(models.TextChoices):
+    PRELIMINARY = 'PRELIMINARY', 'Preliminary'
+    TECHNICAL   = 'TECHNICAL',   'Technical'
+
+
 class DepartmentReview(models.Model):
     plan_version = models.ForeignKey(
         PlanVersion, on_delete=models.CASCADE, related_name='department_reviews'
@@ -532,6 +540,10 @@ class DepartmentReview(models.Model):
     department = models.ForeignKey(
         Department, on_delete=models.PROTECT, related_name='reviews'
     )
+    review_stage = models.CharField(
+        max_length=20, choices=DepartmentReviewStage.choices, default=DepartmentReviewStage.TECHNICAL
+    )
+    amount_payable = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 
     # Officer Level
     officer = models.ForeignKey(
@@ -559,11 +571,11 @@ class DepartmentReview(models.Model):
     escalated   = models.BooleanField(default=False)
 
     class Meta:
-        unique_together = ('plan_version', 'department')
-        ordering = ['department__display_order']
+        unique_together = ('plan_version', 'department', 'review_stage')
+        ordering = ['review_stage', 'department__display_order']
 
     def __str__(self):
-        return f'{self.department.name} Review for {self.plan_version}'
+        return f'{self.review_stage} {self.department.name} Review for {self.plan_version}'
 
 
 class WorkflowLog(models.Model):
