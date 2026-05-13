@@ -5,9 +5,8 @@ from .models import (
     PlanVersion, Comment, Flag, Receipt, Approval, AuditLog,
     DepartmentReview, ChecklistTemplate, RequiredDocument,
     SubmittedDocument, ProformaInvoice, ProformaLineItem,
-    PaymentReceipt, FinalDecision, Notification
+    PaymentReceipt, FinalDecision, Notification, CategoryDepartmentMapping
 )
-
 
 # ─────────────────────────────────────────────
 # AUTH
@@ -421,3 +420,11 @@ class PlanDetailSerializer(PlanListSerializer):
             review_stage = 'PRELIMINARY'
         reviews = obj.get_current_reviews(review_stage)
         return DepartmentReviewSerializer(reviews, many=True, context=self.context).data
+
+
+class CategoryDepartmentMappingSerializer(serializers.ModelSerializer):
+    department_name = serializers.ReadOnlyField(source='department.name')
+
+    class Meta:
+        model = CategoryDepartmentMapping
+        fields = ['id', 'category', 'department', 'department_name']

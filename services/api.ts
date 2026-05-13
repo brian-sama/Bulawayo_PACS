@@ -465,3 +465,21 @@ export const markNotificationRead = async (id: number): Promise<any> =>
 
 export const markAllNotificationsRead = async (): Promise<any> =>
   apiFetch('/notifications/mark_all_read/', { method: 'POST' });
+
+// ─────────────────────────────────────────────
+// WORKFLOW CONFIGURATION
+// ─────────────────────────────────────────────
+
+export const getWorkflowMappings = async (): Promise<any[]> => {
+  const data = await apiFetch('/workflow-mappings/');
+  return Array.isArray(data) ? data : data.results ?? [];
+};
+
+export const createWorkflowMapping = async (category: string, departmentId: number): Promise<any> =>
+  apiFetch('/workflow-mappings/', {
+    method: 'POST',
+    body: JSON.stringify({ category, department: departmentId }),
+  });
+
+export const deleteWorkflowMapping = async (id: number): Promise<any> =>
+  apiFetch(`/workflow-mappings/${id}/`, { method: 'DELETE' });

@@ -19,6 +19,7 @@ import { PlanDetails } from './views/PlanDetails';
 import { ReviewPool } from './views/ReviewPool';
 import { LandingPage } from './views/LandingPage';
 import { ReviewInterface } from './views/ReviewInterface';
+import { WorkflowConfig } from './views/WorkflowConfig';
 
 type ViewType = 'DASHBOARD' | 'REVIEWS' | 'PLAN_DETAILS' | 'ANALYTICS' | 'USER_MANAGEMENT' | 'RECEPTION' | 'FINAL_APPROVAL' | 'SEARCH_ARCHIVE' | 'IT_DASHBOARD' | 'AUDIT_LOGS' | 'WORKFLOW_CONFIG';
 
@@ -117,15 +118,11 @@ export const App: React.FC = () => {
           <div className="space-y-6">
             <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm flex justify-between items-center">
               <div>
-                <h1 className="text-2xl font-bold text-slate-800">Workflow Configuration</h1>
-                <p className="text-slate-500">Manage dynamic routing rules and department visibility.</p>
+                <h1 className="text-2xl font-bold text-[#003366]">Workflow Routing Engine</h1>
+                <p className="text-slate-500">Configure mandatory technical reviewing departments for each building plan category.</p>
               </div>
             </div>
-            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400">
-              <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">⚙️</div>
-              <p className="font-medium">Workflow Engine Configuration Interface</p>
-              <p className="text-sm">This module allows IT to define which plan categories route to which departments.</p>
-            </div>
+            <WorkflowConfig />
           </div>
         );
       case 'RECEPTION':

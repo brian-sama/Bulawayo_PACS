@@ -13,6 +13,7 @@ router.register(r'flags',                views.FlagViewSet,               basena
 router.register(r'audit-logs',           views.AuditLogViewSet,           basename='auditlog')
 router.register(r'department-reviews',   views.DepartmentReviewViewSet,   basename='departmentreview')
 router.register(r'checklist-templates',  views.ChecklistTemplateViewSet,  basename='checklisttemplate')
+router.register(r'workflow-mappings',    views.CategoryDepartmentMappingViewSet, basename='workflowmapping')
 router.register(r'submitted-documents',  views.SubmittedDocumentViewSet,  basename='submitteddocument')
 router.register(r'proforma-invoices',    views.ProformaInvoiceViewSet,    basename='proformainvoice')
 router.register(r'final-decisions',      views.FinalDecisionViewSet,      basename='finaldecision')

@@ -31,12 +31,10 @@ from .serializers import (
     ChecklistTemplateSerializer, RequiredDocumentSerializer,
     SubmittedDocumentSerializer, ProformaInvoiceSerializer,
     ProformaLineItemSerializer, PaymentReceiptSerializer,
-    FinalDecisionSerializer, NotificationSerializer,
+    FinalDecisionSerializer, NotificationSerializer, CategoryDepartmentMappingSerializer
 )
 from .permissions import IsAdmin, IsStaffOrAbove, IsReceptionOrAbove, IsOwnerOrStaff
 from .services.notifications import dispatch_notification
-
-
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
@@ -1127,6 +1125,25 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 class ChecklistTemplateViewSet(viewsets.ModelViewSet):
     queryset = ChecklistTemplate.objects.prefetch_related('required_documents').all()
     serializer_class = ChecklistTemplateSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated()]
+        return [IsAdmin()]
+
+
+# ─────────────────────────────────────────────
+# WORKFLOW CONFIGURATION
+# ─────────────────────────────────────────────
+
+class CategoryDepartmentMappingViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing Category to Department mappings.
+    - Admins can modify these (POST/PUT/DELETE)
+    - Authenticated users can read them (GET)
+    """
+    queryset = CategoryDepartmentMapping.objects.all().select_related('department')
+    serializer_class = CategoryDepartmentMappingSerializer
 
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
