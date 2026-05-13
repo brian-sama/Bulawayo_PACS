@@ -15,7 +15,7 @@ export const UserManagement: React.FC = () => {
         email: '',
         full_name: '',
         password: '',
-        role: 'STAFF',
+        role: 'DEPT_OFFICER',
         department: '',
     });
 
@@ -54,7 +54,7 @@ export const UserManagement: React.FC = () => {
                 email: '',
                 full_name: '',
                 password: '',
-                role: 'STAFF',
+                role: 'DEPT_OFFICER',
                 department: '',
             });
         }
@@ -70,6 +70,10 @@ export const UserManagement: React.FC = () => {
         e.preventDefault();
         setError('');
         try {
+            if ((formData.role === 'DEPT_OFFICER' || formData.role === 'DEPT_HEAD') && !formData.department) {
+                throw new Error('A department is required for Department Officers and Department Heads.');
+            }
+
             if (editingUser) {
                 // Clean up data before submission
                 const submissionData: any = { ...formData };

@@ -27,6 +27,17 @@ class Command(BaseCommand):
                 name=d['name'],
                 defaults={'code': d['code'], 'display_order': d['order']}
             )
+            if not created:
+                updated = False
+                if not dept.code:
+                    dept.code = d['code']
+                    updated = True
+                if dept.display_order != d['order']:
+                    dept.display_order = d['order']
+                    updated = True
+                if updated:
+                    dept.save(update_fields=['code', 'display_order'])
+                    self.stdout.write(f"Updated existing department '{dept.name}' with code '{dept.code}' and order '{dept.display_order}'")
             depts[d['code']] = dept
             if created:
                 self.stdout.write(f'Created department: {dept.name}')

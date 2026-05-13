@@ -211,10 +211,17 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                 </div>
                             </div>
                             <button
-                                onClick={() => onNavigate(isReceptionist ? 'RECEPTION' : 'REVIEWS')}
+                                onClick={() => {
+                                    if (user.role === 'RECEPTION') onNavigate('RECEPTION');
+                                    else if (user.role === 'FINAL_APPROVER') onNavigate('FINAL_APPROVAL');
+                                    else if (user.role === 'ADMIN') onNavigate('USER_MANAGEMENT');
+                                    else onNavigate('REVIEWS');
+                                }}
                                 className="w-full mt-8 bg-white/10 hover:bg-white/20 border border-white/20 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
                             >
-                                {isReceptionist ? 'Go to Reception Gateway' : 'Go to Review Pool'}
+                                {user.role === 'RECEPTION' ? 'Go to Reception Gateway' :
+                                 user.role === 'FINAL_APPROVER' ? 'Go to Final Signature' :
+                                 user.role === 'ADMIN' ? 'Go to User Administration' : 'Go to Review Pool'}
                             </button>
                         </div>
                         <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-white/5 rounded-full blur-3xl"></div>

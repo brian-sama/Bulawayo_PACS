@@ -70,6 +70,8 @@ export const App: React.FC = () => {
   const handleLogout = () => {
     setAppKey(k => k + 1);
     setUser(null);
+    setCurrentView('DASHBOARD');
+    setSelectedPlan(null);
     setShowLogin(true);
     setJustLoggedOut(true);
     apiLogout(); // clears local/session storage, redirects to '/' with pacs_show_login=true
