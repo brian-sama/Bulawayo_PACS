@@ -329,6 +329,45 @@ def _record_geometry_exception(plan, user, payload, request=None):
     return exception
 
 
+def _apply_checklist_to_plan(plan, user):
+    """
+    Look up the ChecklistTemplate for the plan's category and create
+    RequiredDocument instances specifically for this plan if they don't exist.
+    """
+    from .models import ChecklistTemplate, RequiredDocument
+    template = ChecklistTemplate.objects.filter(plan_type=plan.category).first()
+    if not template:
+        # Fallback to a general template if available
+        template = ChecklistTemplate.objects.filter(name__icontains='General').first()
+    
+    if template:
+        for rd in template.required_documents.all():
+            # Only create if a doc with the same code doesn't already exist for this plan
+            if not RequiredDocument.objects.filter(plan=plan, code=rd.code).exists():
+                RequiredDocument.objects.create(
+                    plan=plan,
+                    template=None, # It's now plan-specific
+                    code=rd.code,
+                    label=rd.label,
+                    description=rd.description,
+                    is_optional=rd.is_optional,
+                    is_rates_payment=rd.is_rates_payment,
+                    is_system_generated=rd.is_system_generated,
+                    visibility_departments=rd.visibility_departments
+                )
+    
+    # Handle representative documents
+    if plan.is_representative:
+        if not RequiredDocument.objects.filter(plan=plan, code='POWER_OF_ATTORNEY').exists():
+            RequiredDocument.objects.create(
+                plan=plan,
+                code='POWER_OF_ATTORNEY',
+                label='Power of Attorney',
+                description='Required as you are acting on behalf of the owner.',
+                is_optional=False
+            )
+
+
 def _check_and_advance_to_final_decision(plan):
     """
     After a department review is submitted, check if all departments are resolved.
@@ -653,6 +692,26 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         plan.status = PlanStatus.DRAFT
         plan.save(update_fields=['status'])
+
+        # Apply checklist requirements automatically
+        _apply_checklist_to_plan(plan, request.user)
+
+        # Handle dynamic document uploads (doc_CODE)
+        for key, file_obj in request.FILES.items():
+            if key.startswith('doc_'):
+                code = key[4:]
+                req = plan.custom_requirements.filter(code=code).first()
+                if req:
+                    SubmittedDocument.objects.create(
+                        plan=plan,
+                        required_doc=req,
+                        label=req.label,
+                        file=file_obj,
+                        uploaded_by=request.user,
+                        version=1,
+                        status='PENDING'
+                    )
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -1168,7 +1227,66 @@ class PlanViewSet(viewsets.ModelViewSet):
             subject=f'Final Approval Granted — {plan.plan_id}'
         )
 
-        return Response(ApprovalSerializer(approval).data)
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def download_intake_slip(self, request, pk=None):
+        """Generates and downloads the intake slip."""
+        plan = self.get_object()
+        from .services.doc_service import DocumentGenerator
+        pdf_content = DocumentGenerator.generate_intake_slip(plan)
+        
+        from django.http import HttpResponse
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="intake_slip_{plan.plan_id}.pdf"'
+        return response
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def download_approval_certificate(self, request, pk=None):
+        """Generates and downloads the final approval certificate."""
+        plan = self.get_object()
+        approval = getattr(plan, 'approval', None)
+        if not approval:
+            return Response({'error': 'No approval record found for this plan.'}, status=404)
+        
+        from .services.doc_service import DocumentGenerator
+        pdf_content = DocumentGenerator.generate_approval_certificate(plan, approval)
+        
+        from django.http import HttpResponse
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="approval_cert_{plan.plan_id}.pdf"'
+        return response
+
+    @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
+    def request_document(self, request, pk=None):
+        """
+        Allows staff (Reception, Dept Officer, etc.) to request an additional document
+        specifically for this plan.
+        Payload: { "label": "...", "description": "...", "code": "...", "is_optional": false, "visibility": "HOUSING" }
+        """
+        plan = self.get_object()
+        label = request.data.get('label')
+        code = request.data.get('code')
+        if not label or not code:
+            return Response({'error': 'label and code are required.'}, status=400)
+        
+        rd = RequiredDocument.objects.create(
+            plan=plan,
+            code=code,
+            label=label,
+            description=request.data.get('description', ''),
+            is_optional=_as_bool(request.data.get('is_optional'), False),
+            visibility_departments=request.data.get('visibility', '')
+        )
+        
+        log_action(request.user, 'DOCUMENT_REQUESTED_DYNAMIC', 'Plan', plan.id,
+                   new_value={'label': label, 'code': code}, request=request)
+        
+        dispatch_notification(
+            plan.client, 'DOCUMENTS_REQUESTED',
+            f'Additional document requested for {plan.plan_id}: "{label}". {rd.description}',
+            subject=f'Additional Document Requested — {plan.plan_id}'
+        )
+        
+        return Response(RequiredDocumentSerializer(rd).data, status=status.HTTP_201_CREATED)
 
 
 # ─────────────────────────────────────────────
@@ -1461,6 +1579,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 class ChecklistTemplateViewSet(viewsets.ModelViewSet):
     queryset = ChecklistTemplate.objects.prefetch_related('required_documents').all()
     serializer_class = ChecklistTemplateSerializer
+    filterset_fields = ['category']
 
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
@@ -1507,7 +1626,26 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
 
         if user.role == UserRole.CLIENT:
             return qs.filter(plan__client=user)
-        return qs
+        
+        if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER]:
+            return qs
+        
+        # Staff visibility filtering
+        if user.role == UserRole.RECEPTION:
+            return qs # Reception sees all for verification
+        
+        if user.department:
+            dept_code = user.department.code or ''
+            # Filter documents where visibility_departments is empty OR contains the user's dept code
+            # Note: This is an OR filter for empty or match
+            from django.db.models import Q
+            return qs.filter(
+                Q(required_doc__visibility_departments__isnull=True) |
+                Q(required_doc__visibility_departments='') |
+                Q(required_doc__visibility_departments__icontains=dept_code)
+            ).distinct()
+            
+        return qs.none()
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -1668,36 +1806,15 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
     def download(self, request, pk=None):
+        """Generates and downloads the proforma invoice PDF."""
         invoice = self.get_object()
-        buffer = BytesIO()
-        doc = fitz.open()
-        page = doc.new_page(width=595, height=842)
-        y = 72
-        lines = [
-            'BULAWAYO CITY COUNCIL',
-            'Proforma Invoice',
-            f'Invoice: {invoice.invoice_number}',
-            f'Plan: {invoice.plan.plan_id}',
-            f'Client: {invoice.plan.client.full_name}',
-            f'Stand: {invoice.plan.stand.stand_number}',
-            f'Issued: {invoice.issued_at:%Y-%m-%d}',
-            '',
-            'Line Items',
-        ]
-        for line in lines:
-            page.insert_text((72, y), line, fontsize=12, fontname='helv')
-            y += 22
-        for item in invoice.line_items.all():
-            page.insert_text((72, y), f'- {item.label} | Vote {item.vote_no} | USD {item.amount_usd} | ZWL {item.amount_zwl}', fontsize=10, fontname='helv')
-            y += 18
-        y += 12
-        page.insert_text((72, y), f'Total USD: {invoice.total_usd}', fontsize=12, fontname='helv')
-        y += 22
-        page.insert_text((72, y), f'Total ZWL: {invoice.total_zwl}', fontsize=12, fontname='helv')
-        doc.save(buffer, garbage=4, deflate=True)
-        doc.close()
-        buffer.seek(0)
-        return FileResponse(buffer, content_type='application/pdf', filename=f'{invoice.invoice_number}.pdf')
+        from .services.doc_service import DocumentGenerator
+        pdf_content = DocumentGenerator.generate_proforma_pdf(invoice)
+        
+        from django.http import HttpResponse
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="proforma_{invoice.invoice_number}.pdf"'
+        return response
 
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def add_line_item(self, request, pk=None):

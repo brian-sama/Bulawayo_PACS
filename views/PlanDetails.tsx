@@ -2,15 +2,17 @@
 import React, { useState } from 'react';
 import { Plan, PlanStatus, UserProfile } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
+import DocumentReviewTable from '../components/documents/DocumentReviewTable';
 import * as api from '../services/api';
 
 interface PlanDetailsProps {
     plan: Plan;
     user: UserProfile | null;
     onBack: () => void;
+    onRefresh: () => void;
 }
 
-export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
+export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, user, onBack, onRefresh }) => {
     const [isResubmitting, setIsResubmitting] = useState(false);
 
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -190,6 +192,17 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, onBack }) => {
                             </div>
                         </div>
                     )}
+                </div>
+
+                <div className="lg:col-span-3">
+                    <DocumentReviewTable 
+                        planId={plan.plan_id}
+                        planPk={plan.id}
+                        documents={plan.submitted_documents || []}
+                        requirements={plan.required_documents || []}
+                        user={user || { role: 'CLIENT' } as UserProfile}
+                        onRefresh={onRefresh}
+                    />
                 </div>
 
                 {/* Info Sidebar */}

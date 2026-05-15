@@ -66,6 +66,7 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
     const [step,           setStep]           = useState(0);
     const [submissionType, setSubmissionType] = useState<SubmissionType | null>(null);
     const [loading,        setLoading]        = useState(false);
+    const [checklist,      setChecklist]      = useState<any[]>([]);
     const [geometryModalOpen, setGeometryModalOpen] = useState(false);
     const [geometryMode, setGeometryMode] = useState<GeometryModalMode>('ASSESSMENT');
     const [geometryShape, setGeometryShape] = useState<GeometryShapeType>('RECTANGLE');
@@ -118,6 +119,21 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
     });
 
     // ── Helpers ────────────────────────────────────────────────────────────
+    React.useEffect(() => {
+        if (formData.property.category) {
+            api.apiFetch(`/checklist-templates/?category=${formData.property.category}`)
+                .then(data => {
+                    const templates = Array.isArray(data) ? data : (data.results || []);
+                    if (templates.length > 0) {
+                        setChecklist(templates[0].required_documents || []);
+                    } else {
+                        setChecklist([]);
+                    }
+                })
+                .catch(err => console.error("Failed to fetch checklist", err));
+        }
+    }, [formData.property.category]);
+
     const handleTextInput = (section: string, field: string, value: any) => {
         setFormData(prev => ({
             ...prev,
@@ -241,14 +257,12 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
             payload.append('shapes',        JSON.stringify(formData.geometry.shapes));
             payload.append('geometry_assessments', JSON.stringify(formData.geometry.assessments));
 
-            if (formData.documents.titleDeedFile)
-                payload.append('title_deed', formData.documents.titleDeedFile);
-            if (formData.documents.structuralCertificate)
-                payload.append('structural_cert', formData.documents.structuralCertificate);
-            if (formData.documents.architecturalPlanPdf)
-                payload.append('plan_file_0', formData.documents.architecturalPlanPdf);
-            if (formData.documents.architecturalPlanDwg)
-                payload.append('plan_file_1', formData.documents.architecturalPlanDwg);
+            checklist.forEach((req: any) => {
+                const file = (formData.documents as any)[req.code];
+                if (file) {
+                    payload.append(`doc_${req.code}`, file);
+                }
+            });
 
             payload.append('receipt_number', formData.payment.receiptNumber);
             if (formData.payment.receiptProofFile)
@@ -744,27 +758,36 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                     <div className="space-y-8 animate-in fade-in slide-in-from-right-8 duration-500">
                         <div>
                             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-1">Technical Dossier</h3>
-                            <p className="text-sm font-medium text-slate-400">High-resolution PDF binaries required for departmental circulation.</p>
+                            <p className="text-sm font-medium text-slate-400">Please upload the required documents based on your plan category ({formData.property.category}).</p>
                         </div>
 
                         <div className="grid grid-cols-1 gap-6">
-                            {[
-                                { key: 'architecturalPlanPdf', label: 'Architectural Drawings (PDF)', accept: '.pdf', icon: '📄', color: 'blue' },
-                                { key: 'architecturalPlanDwg', label: 'CAD Model (DWG / DXF)', accept: '.dwg,.dxf', icon: '📦', color: 'indigo' },
-                                { key: 'titleDeedFile', label: 'Proof of Ownership / Title Deed', accept: '.pdf', icon: '📜', color: 'slate' },
-                                { key: 'structuralCertificate', label: 'Structural Engineers Certificate (optional)', accept: '.pdf', icon: '🏗️', color: 'green' },
-                            ].map(({ key, label, accept, icon, color }) => {
-                                const file = (formData.documents as any)[key] as File | null;
+                            {checklist.map((req: any) => {
+                                const file = (formData.documents as any)[req.code] as File | null;
                                 return (
-                                    <div key={key} className="flex items-center gap-6 p-6 rounded-[2rem] border border-slate-100 bg-[#F9FAFB] hover:bg-white transition-all cursor-pointer relative group">
-                                        <input title={label} type="file" accept={accept} onChange={e => handleFileUpload('documents', key, e.target.files)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                        <div className={`w-14 h-14 bg-${color}-600 rounded-2xl flex items-center justify-center text-white text-2xl shadow-xl group-hover:scale-110 transition-transform`}>{icon}</div>
+                                    <div key={req.code} className="flex items-center gap-6 p-6 rounded-[2rem] border border-slate-100 bg-[#F9FAFB] hover:bg-white transition-all cursor-pointer relative group">
+                                        <input 
+                                            title={req.label} 
+                                            type="file" 
+                                            accept=".pdf,.dwg,.dxf" 
+                                            onChange={e => handleFileUpload('documents', req.code, e.target.files)} 
+                                            className="absolute inset-0 opacity-0 cursor-pointer" 
+                                        />
+                                        <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white text-2xl shadow-xl group-hover:scale-110 transition-transform">
+                                            {req.code.includes('PLAN') ? '📄' : req.code.includes('DEED') ? '📜' : '📁'}
+                                        </div>
                                         <div className="flex-1">
-                                            <h4 className="font-black text-slate-800 uppercase tracking-widest text-xs">{label}</h4>
+                                            <h4 className="font-black text-slate-800 uppercase tracking-widest text-xs">
+                                                {req.label} {req.is_optional ? '(Optional)' : <span className="text-red-500">*</span>}
+                                            </h4>
+                                            <p className="text-[10px] text-slate-400 mt-1">{req.description}</p>
                                             {file ? (
-                                                <div className="mt-2 text-[9px] font-black text-emerald-600 uppercase">✓ {file.name}</div>
+                                                <div className="mt-2 text-[9px] font-black text-emerald-600 uppercase flex items-center gap-2">
+                                                    <span className="w-4 h-4 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[8px]">✓</span>
+                                                    {file.name}
+                                                </div>
                                             ) : (
-                                                <p className="text-[10px] font-medium text-slate-400 mt-1">Click to upload</p>
+                                                <p className="text-[10px] font-bold text-blue-500 mt-2 uppercase tracking-widest group-hover:translate-x-1 transition-transform">Click to upload →</p>
                                             )}
                                         </div>
                                     </div>

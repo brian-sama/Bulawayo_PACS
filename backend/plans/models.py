@@ -669,10 +669,10 @@ class WorkflowLog(models.Model):
 class ChecklistTemplate(models.Model):
     """
     Defines a set of required documents for a specific plan type.
-    Receptionist selects the template; the system requests those docs from the applicant.
     """
     name       = models.CharField(max_length=100)
-    plan_type  = models.CharField(max_length=50)   # e.g. 'RESIDENTIAL_MINOR', 'COMMERCIAL'
+    plan_type  = models.CharField(max_length=50, choices=PlanCategory.choices) # Linked to PlanCategory
+    description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -680,19 +680,34 @@ class ChecklistTemplate(models.Model):
 
 
 class RequiredDocument(models.Model):
-    """A single document item within a checklist template."""
+    """A single document item within a checklist template or specific to a plan."""
     template         = models.ForeignKey(ChecklistTemplate, on_delete=models.CASCADE,
-                                         related_name='required_documents')
+                                         related_name='required_documents', null=True, blank=True)
+    plan             = models.ForeignKey(Plan, on_delete=models.CASCADE,
+                                         related_name='custom_requirements', null=True, blank=True)
     code             = models.CharField(max_length=50)    # e.g. 'TITLE_DEED'
     label            = models.CharField(max_length=200)
+    description      = models.TextField(blank=True)
     is_rates_payment = models.BooleanField(
         default=False,
         help_text="When True, the receptionist can also add a rates payment amount to the proforma."
     )
     is_optional      = models.BooleanField(default=False)
+    is_system_generated = models.BooleanField(default=False)
+    
+    # Visibility: CSV of department codes e.g. "HOUSING,ESTATES"
+    # If empty, visible to all technical staff.
+    visibility_departments = models.CharField(max_length=255, blank=True, help_text="Comma-separated department codes.")
 
     def __str__(self):
         return f'{self.label} [{self.code}]'
+
+
+class DocumentStatus(models.TextChoices):
+    PENDING    = 'PENDING',    'Pending'
+    VERIFIED   = 'VERIFIED',   'Verified'
+    REJECTED   = 'REJECTED',   'Rejected'
+    SUPERSEDED = 'SUPERSEDED', 'Superseded'
 
 
 class SubmittedDocument(models.Model):
@@ -705,14 +720,21 @@ class SubmittedDocument(models.Model):
     uploaded_by  = models.ForeignKey(User, on_delete=models.PROTECT,
                                      related_name='uploaded_documents')
     uploaded_at  = models.DateTimeField(auto_now_add=True)
+    version      = models.PositiveIntegerField(default=1)
+    status       = models.CharField(max_length=20, choices=DocumentStatus.choices, default=DocumentStatus.PENDING)
+    
     verified_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
                                      related_name='verified_documents')
     verified_at  = models.DateTimeField(null=True, blank=True)
-    is_verified  = models.BooleanField(default=False)
+    is_verified  = models.BooleanField(default=False) # Legacy field, using status now but keeping for compatibility
     comment      = models.TextField(blank=True)
+    metadata     = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
 
     def __str__(self):
-        return f'{self.label} for {self.plan.plan_id}'
+        return f'{self.label} v{self.version} for {self.plan.plan_id}'
 
 
 # ==========================================================

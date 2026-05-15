@@ -221,7 +221,7 @@ class DepartmentReviewSerializer(serializers.ModelSerializer):
 class RequiredDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = RequiredDocument
-        fields = ['id', 'template', 'code', 'label', 'is_rates_payment', 'is_optional']
+        fields = ['id', 'template', 'plan', 'code', 'label', 'description', 'is_rates_payment', 'is_optional', 'is_system_generated', 'visibility_departments']
         read_only_fields = ['id']
 
 
@@ -247,10 +247,10 @@ class SubmittedDocumentSerializer(serializers.ModelSerializer):
         model = SubmittedDocument
         fields = [
             'id', 'plan', 'required_doc', 'required_doc_label', 'label', 'file',
-            'uploaded_by', 'uploaded_by_name', 'uploaded_at',
-            'verified_by', 'verified_by_name', 'verified_at', 'is_verified', 'comment',
+            'uploaded_by', 'uploaded_by_name', 'uploaded_at', 'version', 'status',
+            'verified_by', 'verified_by_name', 'verified_at', 'is_verified', 'comment', 'metadata',
         ]
-        read_only_fields = ['id', 'uploaded_by', 'uploaded_at', 'verified_by', 'verified_at', 'is_verified', 'comment']
+        read_only_fields = ['id', 'uploaded_by', 'uploaded_at', 'verified_by', 'verified_at', 'is_verified', 'comment', 'metadata']
         extra_kwargs = {
             'label': {'required': False, 'allow_blank': True},
             'required_doc': {'required': False, 'allow_null': True},
@@ -427,7 +427,8 @@ class PlanDetailSerializer(PlanListSerializer):
     department_reviews  = serializers.SerializerMethodField()
     geometry_assessments = GeometryAssessmentSerializer(many=True, read_only=True)
     geometry_exceptions  = GeometryExceptionSerializer(many=True, read_only=True)
-    submitted_documents = SubmittedDocumentSerializer(many=True, read_only=True)
+    submitted_documents = serializers.SerializerMethodField()
+    required_documents  = RequiredDocumentSerializer(source='custom_requirements', many=True, read_only=True)
     proforma_invoices   = ProformaInvoiceSerializer(many=True, read_only=True)
     final_decision      = FinalDecisionSerializer(read_only=True)
 
@@ -449,6 +450,46 @@ class PlanDetailSerializer(PlanListSerializer):
             review_stage = 'PRELIMINARY'
         reviews = obj.get_current_reviews(review_stage)
         return DepartmentReviewSerializer(reviews, many=True, context=self.context).data
+
+    def get_submitted_documents(self, obj):
+        """Filter documents based on user role and department visibility."""
+        request = self.context.get('request')
+        if not request:
+            return []
+        
+        user = request.user
+        qs = obj.submitted_documents.all()
+
+        if user.is_anonymous:
+            return []
+        
+        if user.role in ['ADMIN', 'FINAL_APPROVER']:
+            pass # See everything
+        elif user.role == 'CLIENT':
+            if obj.client != user:
+                return []
+            # Client sees their own
+        elif user.role == 'RECEPTION':
+            # Reception sees almost everything except internal memos or specific restricted docs
+            # For now, let's say they see docs where visibility is empty or contains RECEPTION
+            pass
+        else:
+            # Departmental staff
+            if user.department:
+                dept_code = user.department.code or ''
+                # Filter docs where visibility is empty OR contains the user's dept code
+                # This logic is slightly complex for a QuerySet if visibility_departments is a string
+                # We'll do it in Python for the serializer
+                visible_docs = []
+                for doc in qs:
+                    v_depts = doc.required_doc.visibility_departments if doc.required_doc else ""
+                    if not v_depts or dept_code in [d.strip() for d in v_depts.split(',') if d.strip()]:
+                        visible_docs.append(doc)
+                    elif dept_code == "RECEPTION": # Reception special case
+                        visible_docs.append(doc)
+                return SubmittedDocumentSerializer(visible_docs, many=True, context=self.context).data
+
+        return SubmittedDocumentSerializer(qs, many=True, context=self.context).data
 
 
 class CategoryDepartmentMappingSerializer(serializers.ModelSerializer):

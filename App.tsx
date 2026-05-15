@@ -8,7 +8,7 @@ import { ReviewWorkspace } from './views/ReviewWorkspace';
 import { LoginView } from './views/LoginView';
 import { UserManagement } from './views/UserManagement';
 import { MOCK_PLANS } from './constants';
-import { logout as apiLogout } from './services/api';
+import * as api from './services/api';
 import { ReceptionGateway } from './views/ReceptionGateway';
 import { FinalApproval } from './views/FinalApproval';
 import { ITDashboard } from './views/ITDashboard';
@@ -76,7 +76,7 @@ export const App: React.FC = () => {
     setSelectedPlan(null);
     setShowLogin(true);
     setJustLoggedOut(true);
-    apiLogout(); // clears local/session storage, redirects to '/' with pacs_show_login=true
+    api.logout(); // clears local/session storage, redirects to '/' with pacs_show_login=true
   };
 
   const role = user?.role;
@@ -89,6 +89,16 @@ export const App: React.FC = () => {
       setCurrentView('RECEPTION');
     } else {
       setCurrentView('PLAN_DETAILS');
+    }
+  };
+
+  const refreshSelectedPlan = async () => {
+    if (!selectedPlan) return;
+    try {
+      const updated = await api.getPlanDetails(selectedPlan.id);
+      setSelectedPlan(updated);
+    } catch (err) {
+      console.error("Failed to refresh plan details", err);
     }
   };
 
@@ -127,12 +137,12 @@ export const App: React.FC = () => {
         }
 
         if (selectedPlan?.status === 'DRAFT' || selectedPlan?.status === 'PRELIMINARY_SUBMITTED' || user?.role === 'CLIENT') {
-          return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+          return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} onRefresh={refreshSelectedPlan} />
         } else {
           // Internal Workspace (Technical Review)
           const allowedTechnicalRoles = ['DEPT_OFFICER', 'DEPT_HEAD', 'ADMIN', 'FINAL_APPROVER'];
           if (!allowedTechnicalRoles.includes(user?.role || '')) {
-             return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+             return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} onRefresh={refreshSelectedPlan} />
           }
           return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('REVIEWS')} />
         }

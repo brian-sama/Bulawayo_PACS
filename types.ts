@@ -97,6 +97,39 @@ export interface GeometryException {
   created_at?: string;
 }
 
+export interface RequiredDocument {
+  id: number;
+  template?: number;
+  plan?: number;
+  code: string;
+  label: string;
+  description?: string;
+  is_rates_payment: boolean;
+  is_optional: boolean;
+  is_system_generated: boolean;
+  visibility_departments?: string;
+}
+
+export interface SubmittedDocument {
+  id: number;
+  plan: number;
+  required_doc?: number;
+  required_doc_label?: string;
+  label: string;
+  file: string;
+  uploaded_by: number;
+  uploaded_by_name: string;
+  uploaded_at: string;
+  version: number;
+  status: 'PENDING' | 'VERIFIED' | 'REJECTED' | 'SUPERSEDED';
+  verified_by?: number;
+  verified_by_name?: string;
+  verified_at?: string;
+  is_verified: boolean;
+  comment?: string;
+  metadata?: any;
+}
+
 export interface Plan {
   id: number;
   plan_id: string;
@@ -128,7 +161,8 @@ export interface Plan {
   date_submitted?: string;
   versions?: any[];
   department_reviews?: DepartmentReview[];
-  submitted_documents?: any[];
+  submitted_documents?: SubmittedDocument[];
+  required_documents?: RequiredDocument[]; // Dynamically fetched or populated
   geometry_assessments?: GeometryAssessment[];
   geometry_exceptions?: GeometryException[];
 }
