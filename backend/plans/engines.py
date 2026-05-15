@@ -11,18 +11,32 @@ class AreaCalculationEngine:
 
     def calculate_shape_area(self, shape):
         """Calculates area for a single geometric shape."""
-        shape_type = shape.get('type', '').lower()
+        shape_type = (shape.get('shape_type') or shape.get('type') or '').lower()
+        dimensions = shape.get('dimensions') if isinstance(shape.get('dimensions'), dict) else shape
         
         try:
             if shape_type == 'rectangle':
-                return float(shape.get('length', 0)) * float(shape.get('width', 0))
+                return float(dimensions.get('length', 0)) * float(dimensions.get('width', 0))
             
             elif shape_type == 'circle':
-                radius = float(shape.get('radius', 0))
+                radius = float(dimensions.get('radius', 0))
                 return math.pi * (radius ** 2)
             
             elif shape_type == 'triangle':
-                return 0.5 * float(shape.get('base', 0)) * float(shape.get('height', 0))
+                return 0.5 * float(dimensions.get('base', 0)) * float(dimensions.get('height', 0))
+
+            elif shape_type == 'trapezium':
+                side_a = float(dimensions.get('sideA', dimensions.get('side_a', 0)))
+                side_b = float(dimensions.get('sideB', dimensions.get('side_b', 0)))
+                return 0.5 * (side_a + side_b) * float(dimensions.get('height', 0))
+
+            elif shape_type in ['l_shape', 'l-shaped composite', 'lshape']:
+                outer = float(dimensions.get('length', 0)) * float(dimensions.get('width', 0))
+                cutout = float(dimensions.get('cutoutLength', dimensions.get('cutout_length', 0))) * float(dimensions.get('cutoutWidth', dimensions.get('cutout_width', 0)))
+                return max(outer - cutout, 0)
+
+            elif shape_type in ['manual', 'manual_entry']:
+                return float(dimensions.get('manualArea', dimensions.get('manual_area', 0)))
                 
             else:
                 return 0.0 # Unknown shape

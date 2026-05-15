@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import * as api from '../services/api';
-import { Plan } from '../types';
+import { GeometryAssessment, GeometryShapeType, Plan } from '../types';
 
 interface SubmissionWizardProps {
     onCancel: () => void;
@@ -9,6 +9,51 @@ interface SubmissionWizardProps {
 }
 
 type SubmissionType = 'PRELIMINARY' | 'FINAL';
+
+type GeometryModalMode = 'ASSESSMENT' | 'NOT_APPLICABLE' | 'EXCEPTION';
+
+const SHAPE_LABELS: Record<GeometryShapeType, string> = {
+    RECTANGLE: 'Rectangle',
+    TRIANGLE: 'Triangle',
+    CIRCLE: 'Circle',
+    TRAPEZIUM: 'Trapezium',
+    L_SHAPE: 'L-shape',
+    MANUAL: 'Manual Entry',
+};
+
+const calculateGeometryArea = (shape: GeometryShapeType, values: Record<string, any>) => {
+    const n = (key: string) => Number(values[key] || 0);
+    switch (shape) {
+        case 'RECTANGLE':
+            return n('length') * n('width');
+        case 'TRIANGLE':
+            return 0.5 * n('base') * n('height');
+        case 'CIRCLE':
+            return Math.PI * n('radius') * n('radius');
+        case 'TRAPEZIUM':
+            return 0.5 * (n('sideA') + n('sideB')) * n('height');
+        case 'L_SHAPE':
+            return Math.max((n('length') * n('width')) - (n('cutoutLength') * n('cutoutWidth')), 0);
+        case 'MANUAL':
+            return n('manualArea');
+        default:
+            return 0;
+    }
+};
+
+const shapeFields: Record<GeometryShapeType, { key: string; label: string }[]> = {
+    RECTANGLE: [{ key: 'length', label: 'Length' }, { key: 'width', label: 'Width' }],
+    TRIANGLE: [{ key: 'base', label: 'Base' }, { key: 'height', label: 'Height' }],
+    CIRCLE: [{ key: 'radius', label: 'Radius' }],
+    TRAPEZIUM: [{ key: 'sideA', label: 'Side A' }, { key: 'sideB', label: 'Side B' }, { key: 'height', label: 'Height' }],
+    L_SHAPE: [
+        { key: 'length', label: 'Outer Length' },
+        { key: 'width', label: 'Outer Width' },
+        { key: 'cutoutLength', label: 'Cutout Length' },
+        { key: 'cutoutWidth', label: 'Cutout Width' },
+    ],
+    MANUAL: [{ key: 'manualArea', label: 'Manual Area' }],
+};
 
 // ── Step labels per submission type ──────────────────────────────────────────
 const FINAL_STEPS   = ['Property', 'Ownership', 'Development Context', 'Documents', 'Payment'];
@@ -21,6 +66,18 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
     const [step,           setStep]           = useState(0);
     const [submissionType, setSubmissionType] = useState<SubmissionType | null>(null);
     const [loading,        setLoading]        = useState(false);
+    const [geometryModalOpen, setGeometryModalOpen] = useState(false);
+    const [geometryMode, setGeometryMode] = useState<GeometryModalMode>('ASSESSMENT');
+    const [geometryShape, setGeometryShape] = useState<GeometryShapeType>('RECTANGLE');
+    const [geometryValues, setGeometryValues] = useState<Record<string, any>>({});
+    const [geometryNotes, setGeometryNotes] = useState('');
+    const [geometryReference, setGeometryReference] = useState('');
+    const [geometryException, setGeometryException] = useState({
+        reason: 'GEOMETRY_UNAVAILABLE',
+        justification: '',
+        risk_level: 'MEDIUM',
+        requires_follow_up: true,
+    });
 
     // ── Form Data ──────────────────────────────────────────────────────────
     const [formData, setFormData] = useState({
@@ -40,6 +97,8 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
         geometry: {
             declaredArea: '',
             shapes: [{ type: 'rectangle', dimensions: { length: 0, width: 0 } }] as any[],
+            assessments: [] as GeometryAssessment[],
+            exceptions: [] as any[],
         },
         documents: {
             architecturalPlanPdf: null as File | null,
@@ -80,12 +139,82 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
         else setStep(s => s - 1);
     };
 
-    const addShape = () => {
+    const openGeometryModal = (mode: GeometryModalMode = 'ASSESSMENT') => {
+        setGeometryMode(mode);
+        setGeometryModalOpen(true);
+    };
+
+    const resetGeometryModal = () => {
+        setGeometryShape('RECTANGLE');
+        setGeometryValues({});
+        setGeometryNotes('');
+        setGeometryReference('');
+        setGeometryException({
+            reason: 'GEOMETRY_UNAVAILABLE',
+            justification: '',
+            risk_level: 'MEDIUM',
+            requires_follow_up: true,
+        });
+    };
+
+    const closeGeometryModal = () => {
+        setGeometryModalOpen(false);
+        resetGeometryModal();
+    };
+
+    const saveGeometryAssessment = () => {
+        const declared = Number(formData.geometry.declaredArea || 0);
+        const calculated = Number(calculateGeometryArea(geometryShape, geometryValues).toFixed(2));
+        const difference = Number(Math.abs(calculated - declared).toFixed(2));
+        const toleranceExceeded = declared > 0 ? difference > declared * 0.02 : false;
+        const assessment: GeometryAssessment = {
+            shape_type: geometryShape,
+            dimensions: geometryValues,
+            declared_area: declared,
+            calculated_area: calculated,
+            difference,
+            tolerance_exceeded: toleranceExceeded,
+            notes: geometryNotes,
+            file_page_reference: geometryReference,
+        };
         setFormData(prev => ({
             ...prev,
-            geometry: { ...prev.geometry, shapes: [...prev.geometry.shapes, { type: 'rectangle', dimensions: { length: 0, width: 0 } }] }
+            geometry: {
+                ...prev.geometry,
+                shapes: [...prev.geometry.shapes, { shape_type: geometryShape, dimensions: geometryValues }],
+                assessments: [...prev.geometry.assessments, assessment],
+            }
         }));
+        closeGeometryModal();
     };
+
+    const saveGeometryException = () => {
+        if (geometryMode === 'EXCEPTION' && geometryException.justification.trim().length < 10) {
+            alert('Please provide a bypass justification of at least 10 characters.');
+            return;
+        }
+        const exception = geometryMode === 'NOT_APPLICABLE'
+            ? {
+                reason: 'NOT_APPLICABLE',
+                justification: geometryException.justification || 'Geometry assessment marked as not applicable at submission stage.',
+                risk_level: 'LOW',
+                requires_follow_up: false,
+            }
+            : geometryException;
+        setFormData(prev => ({
+            ...prev,
+            geometry: {
+                ...prev.geometry,
+                exceptions: [...prev.geometry.exceptions, exception],
+            },
+        }));
+        closeGeometryModal();
+    };
+
+    const geometryCalculatedArea = Number(calculateGeometryArea(geometryShape, geometryValues).toFixed(2));
+    const geometryDeclaredArea = Number(formData.geometry.declaredArea || 0);
+    const geometryDifference = Number(Math.abs(geometryCalculatedArea - geometryDeclaredArea).toFixed(2));
+    const geometryStatus = geometryDeclaredArea > 0 && geometryDifference > geometryDeclaredArea * 0.02 ? 'REVIEW' : 'OK';
 
     // ── FINAL submit ────────────────────────────────────────────────────────
     const handleFinalSubmit = async () => {
@@ -110,6 +239,7 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
 
             payload.append('declared_area', formData.geometry.declaredArea || '0');
             payload.append('shapes',        JSON.stringify(formData.geometry.shapes));
+            payload.append('geometry_assessments', JSON.stringify(formData.geometry.assessments));
 
             if (formData.documents.titleDeedFile)
                 payload.append('title_deed', formData.documents.titleDeedFile);
@@ -162,6 +292,7 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
             }
 
             initPayload.append('declared_area', formData.geometry.declaredArea || '0');
+            initPayload.append('geometry_assessments', JSON.stringify(formData.geometry.assessments));
 
             // Attach title deed at plan creation time so backend saves it to `title_deed` field
             if (formData.preliminary.titleDeedFile)
@@ -272,6 +403,7 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
     const isPrelim = submissionType === 'PRELIMINARY';
 
     return (
+        <>
         <div className="bg-white rounded-[2.5rem] shadow-[0_30px_100px_rgba(0,0,0,0.1)] border border-slate-100 overflow-hidden max-w-4xl mx-auto font-interface">
             {/* Header */}
             <div className="bg-[#003366] px-12 py-12 text-white relative overflow-hidden">
@@ -478,9 +610,27 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                                 <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-1">Development Context</h3>
                                 <p className="text-sm font-medium text-slate-400">Specify the total building area and structural footprints.</p>
                             </div>
-                            <button onClick={addShape} className="bg-blue-50 text-blue-600 px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-600 hover:text-white transition-all">
+                            <button onClick={() => openGeometryModal('ASSESSMENT')} className="bg-blue-50 text-blue-600 px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-600 hover:text-white transition-all">
                                 + Add Geometry
                             </button>
+                        </div>
+
+                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+                            <p className="text-xs font-black text-amber-800 uppercase tracking-widest">Manual Assessment Mode</p>
+                            <p className="text-sm text-amber-700 font-semibold mt-2 leading-relaxed">
+                                Geometry tools are currently in manual assessment mode. Automatic CAD-based extraction will be introduced in a later phase.
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
+                                <button onClick={() => openGeometryModal('ASSESSMENT')} className="px-4 py-3 rounded-xl bg-white border border-amber-200 text-amber-800 text-[10px] font-black uppercase tracking-widest hover:border-amber-500 transition">
+                                    Add Assessment
+                                </button>
+                                <button onClick={() => openGeometryModal('NOT_APPLICABLE')} className="px-4 py-3 rounded-xl bg-white border border-amber-200 text-amber-800 text-[10px] font-black uppercase tracking-widest hover:border-amber-500 transition">
+                                    Mark N/A
+                                </button>
+                                <button onClick={() => openGeometryModal('EXCEPTION')} className="px-4 py-3 rounded-xl bg-white border border-amber-200 text-amber-800 text-[10px] font-black uppercase tracking-widest hover:border-amber-500 transition">
+                                    Exception
+                                </button>
+                            </div>
                         </div>
 
                         <div className="space-y-4">
@@ -497,6 +647,37 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                             </div>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">System will verify against attached PDF scale.</p>
                         </div>
+
+                        {formData.geometry.assessments.length > 0 && (
+                            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden">
+                                <table className="w-full text-left">
+                                    <thead className="bg-slate-50 border-b border-slate-100">
+                                        <tr>
+                                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Shape</th>
+                                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Declared</th>
+                                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Calculated</th>
+                                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Difference</th>
+                                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {formData.geometry.assessments.map((assessment, index) => (
+                                            <tr key={`${assessment.shape_type}-${index}`}>
+                                                <td className="px-4 py-3 text-xs font-bold text-slate-700">{SHAPE_LABELS[assessment.shape_type]}</td>
+                                                <td className="px-4 py-3 text-xs font-bold text-slate-600 text-right">{assessment.declared_area}m²</td>
+                                                <td className="px-4 py-3 text-xs font-bold text-slate-600 text-right">{assessment.calculated_area}m²</td>
+                                                <td className="px-4 py-3 text-xs font-bold text-slate-600 text-right">{assessment.difference}m²</td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`px-2 py-1 rounded text-[9px] font-black uppercase ${assessment.tolerance_exceeded ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                                        {assessment.tolerance_exceeded ? 'Review' : 'OK'}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -679,5 +860,177 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
                 </div>
             </div>
         </div>
+
+        {geometryModalOpen && (
+            <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden">
+                    <div className="bg-[#003366] text-white px-8 py-6 flex items-start justify-between">
+                        <div>
+                            <p className="text-[10px] font-black uppercase tracking-[0.24em] text-blue-200">Manual Geometry</p>
+                            <h3 className="text-2xl font-black mt-1">
+                                {geometryMode === 'ASSESSMENT' ? 'Add Geometry Assessment' :
+                                 geometryMode === 'NOT_APPLICABLE' ? 'Mark Geometry Not Applicable' :
+                                 'Proceed with Exception'}
+                            </h3>
+                        </div>
+                        <button onClick={closeGeometryModal} className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 font-black" title="Close">x</button>
+                    </div>
+
+                    <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto">
+                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm font-semibold text-amber-800 leading-relaxed">
+                            Geometry tools are currently in manual assessment mode. Automatic CAD-based extraction will be introduced in a later phase.
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
+                            {(['ASSESSMENT', 'NOT_APPLICABLE', 'EXCEPTION'] as GeometryModalMode[]).map(mode => (
+                                <button
+                                    key={mode}
+                                    onClick={() => setGeometryMode(mode)}
+                                    className={`px-3 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${geometryMode === mode ? 'bg-white text-[#003366] shadow-sm' : 'text-slate-500'}`}
+                                >
+                                    {mode === 'ASSESSMENT' ? 'Assessment' : mode === 'NOT_APPLICABLE' ? 'Not Applicable' : 'Exception'}
+                                </button>
+                            ))}
+                        </div>
+
+                        {geometryMode === 'ASSESSMENT' ? (
+                            <div className="space-y-5">
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Shape Type</label>
+                                    <select
+                                        title="Shape Type"
+                                        value={geometryShape}
+                                        onChange={event => { setGeometryShape(event.target.value as GeometryShapeType); setGeometryValues({}); }}
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        {(Object.keys(SHAPE_LABELS) as GeometryShapeType[]).map(shape => (
+                                            <option key={shape} value={shape}>{SHAPE_LABELS[shape]}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    {shapeFields[geometryShape].map(field => (
+                                        <div key={field.key}>
+                                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">{field.label}</label>
+                                            <input
+                                                type="number"
+                                                value={geometryValues[field.key] || ''}
+                                                onChange={event => setGeometryValues(prev => ({ ...prev, [field.key]: event.target.value }))}
+                                                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase text-slate-400">Declared</p>
+                                        <p className="text-lg font-black text-slate-800">{geometryDeclaredArea}m²</p>
+                                    </div>
+                                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase text-slate-400">Calculated</p>
+                                        <p className="text-lg font-black text-slate-800">{geometryCalculatedArea}m²</p>
+                                    </div>
+                                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase text-slate-400">Difference</p>
+                                        <p className={`text-lg font-black ${geometryStatus === 'OK' ? 'text-emerald-600' : 'text-amber-600'}`}>{geometryDifference}m²</p>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Supporting file/page reference</label>
+                                    <input
+                                        value={geometryReference}
+                                        onChange={event => setGeometryReference(event.target.value)}
+                                        placeholder="e.g. PDF page 2, grid A3"
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Notes</label>
+                                    <textarea
+                                        value={geometryNotes}
+                                        onChange={event => setGeometryNotes(event.target.value)}
+                                        rows={3}
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                                    />
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-5">
+                                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm font-semibold text-blue-800 leading-relaxed">
+                                    Controlled bypasses are finalized by Evaluation, Department Heads, Admins, or Final Approvers after submission. This records the issue for follow-up visibility.
+                                </div>
+                                {geometryMode === 'EXCEPTION' && (
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Reason for bypass</label>
+                                        <select
+                                            title="Reason for bypass"
+                                            value={geometryException.reason}
+                                            onChange={event => setGeometryException(prev => ({ ...prev, reason: event.target.value }))}
+                                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                        >
+                                            <option value="GEOMETRY_UNAVAILABLE">Geometry unavailable</option>
+                                            <option value="INFORMATION_INCOMPLETE">Information incomplete</option>
+                                            <option value="DRAWING_UNCLEAR">Drawing unclear</option>
+                                            <option value="MANUAL_VERIFICATION_DONE">Manual verification done</option>
+                                            <option value="OTHER">Other</option>
+                                        </select>
+                                    </div>
+                                )}
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Justification</label>
+                                    <textarea
+                                        value={geometryException.justification}
+                                        onChange={event => setGeometryException(prev => ({ ...prev, justification: event.target.value }))}
+                                        rows={4}
+                                        placeholder="Explain what is missing, wrong, unclear, or manually verified."
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                                    />
+                                </div>
+                                {geometryMode === 'EXCEPTION' && (
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-2">Risk level</label>
+                                            <select
+                                                title="Risk level"
+                                                value={geometryException.risk_level}
+                                                onChange={event => setGeometryException(prev => ({ ...prev, risk_level: event.target.value }))}
+                                                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                <option value="LOW">Low</option>
+                                                <option value="MEDIUM">Medium</option>
+                                                <option value="HIGH">High</option>
+                                            </select>
+                                        </div>
+                                        <label className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-black uppercase tracking-widest text-slate-600 mt-6">
+                                            <input
+                                                type="checkbox"
+                                                checked={geometryException.requires_follow_up}
+                                                onChange={event => setGeometryException(prev => ({ ...prev, requires_follow_up: event.target.checked }))}
+                                            />
+                                            Requires follow-up
+                                        </label>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
+                        <button onClick={closeGeometryModal} className="flex-1 py-3 rounded-xl border border-slate-200 text-slate-500 text-sm font-black uppercase tracking-widest hover:bg-white transition">Cancel</button>
+                        <button
+                            onClick={geometryMode === 'ASSESSMENT' ? saveGeometryAssessment : saveGeometryException}
+                            className="flex-[2] py-3 rounded-xl bg-[#003366] text-white text-sm font-black uppercase tracking-widest hover:bg-[#002244] transition"
+                        >
+                            {geometryMode === 'ASSESSMENT' ? 'Save Assessment' : 'Record Exception'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        </>
     );
 };

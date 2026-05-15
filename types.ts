@@ -8,11 +8,16 @@ export const PlanStatusValues = {
   PRE_SCREENING: 'PRE_SCREENING',
   PRELIMINARY_SUBMITTED: 'PRELIMINARY_SUBMITTED',
   PROFORMA_ISSUED: 'PROFORMA_ISSUED',
+  PAYMENT_PENDING: 'PAYMENT_PENDING',
   PAID: 'PAID',
+  DOCUMENTS_PENDING_VERIFICATION: 'DOCUMENTS_PENDING_VERIFICATION',
+  VERIFIED_BY_RECEPTION: 'VERIFIED_BY_RECEPTION',
+  FINAL_SUBMITTED: 'FINAL_SUBMITTED',
   REVIEW_POOL: 'REVIEW_POOL',
   IN_REVIEW: 'IN_REVIEW',
   UNDER_REVIEW: 'UNDER_REVIEW',
   CORRECTIONS_REQUIRED: 'CORRECTIONS_REQUIRED',
+  AWAITING_FINAL_DECISION: 'AWAITING_FINAL_DECISION',
   REJECTED: 'REJECTED',
   APPROVED: 'APPROVED',
   REJECTED_PRE_SCREEN: 'REJECTED_PRE_SCREEN'
@@ -59,6 +64,39 @@ export interface DepartmentComment {
   created_at: string;
 }
 
+export type GeometryShapeType = 'RECTANGLE' | 'TRIANGLE' | 'CIRCLE' | 'TRAPEZIUM' | 'L_SHAPE' | 'MANUAL';
+export type GeometryExceptionReason = 'GEOMETRY_UNAVAILABLE' | 'INFORMATION_INCOMPLETE' | 'DRAWING_UNCLEAR' | 'MANUAL_VERIFICATION_DONE' | 'NOT_APPLICABLE' | 'OTHER';
+export type GeometryRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export interface GeometryAssessment {
+  id?: number;
+  plan?: number;
+  version?: number | null;
+  shape_type: GeometryShapeType;
+  dimensions: Record<string, number | string>;
+  declared_area?: number | string | null;
+  calculated_area: number | string;
+  difference: number | string;
+  tolerance_exceeded: boolean;
+  notes?: string;
+  file_page_reference?: string;
+  assessed_by?: number | null;
+  assessed_by_name?: string;
+  created_at?: string;
+}
+
+export interface GeometryException {
+  id?: number;
+  plan?: number;
+  reason: GeometryExceptionReason;
+  justification: string;
+  risk_level: GeometryRiskLevel;
+  requires_follow_up: boolean;
+  approved_by?: number | null;
+  approved_by_name?: string;
+  created_at?: string;
+}
+
 export interface Plan {
   id: number;
   plan_id: string;
@@ -70,6 +108,7 @@ export interface Plan {
   architect: number;
   architect_name: string;
   category: 'RESIDENTIAL' | 'COMMERCIAL' | 'INDUSTRIAL' | 'MIXED';
+  stand_type?: string;
   status: PlanStatus;
   suburb?: string;
   title_deed?: string | null;
@@ -90,6 +129,8 @@ export interface Plan {
   versions?: any[];
   department_reviews?: DepartmentReview[];
   submitted_documents?: any[];
+  geometry_assessments?: GeometryAssessment[];
+  geometry_exceptions?: GeometryException[];
 }
 
 export interface Flag {

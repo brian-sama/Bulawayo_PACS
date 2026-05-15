@@ -15,6 +15,8 @@ from .models import (
     Department,
     DepartmentReview,
     DepartmentReviewStage,
+    GeometryAssessment,
+    GeometryException,
     Notification,
     Plan,
     PlanStatus,
@@ -40,9 +42,10 @@ class ApiSmokeTests(APITestCase):
 
     def setUp(self):
         self.department = Department.objects.create(name="Planning", code="PLAN", display_order=1)
-        self.housing_department = Department.objects.create(name="Housing Office", code="HOUSING", display_order=2)
-        self.estates_department = Department.objects.create(name="Estates Department", code="ESTATES", display_order=3)
-        self.valuation_department = Department.objects.create(name="Valuation Department", code="VALUATION", display_order=4)
+        self.housing_department = Department.objects.create(name="Housing Section", code="HOUSING", display_order=2)
+        self.estates_department = Department.objects.create(name="Estates Section", code="ESTATES", display_order=3)
+        self.evaluation_department = Department.objects.create(name="Evaluation Section", code="EVALUATION", display_order=4)
+        self.financial_department = Department.objects.create(name="Financial Services Department", code="FINANCE", display_order=5)
 
         self.client_user = User.objects.create_user(
             username="client",
@@ -83,13 +86,21 @@ class ApiSmokeTests(APITestCase):
             role=UserRole.DEPT_OFFICER,
             department=self.estates_department,
         )
-        self.valuation_user = User.objects.create_user(
-            username="valuation",
-            email="valuation@example.com",
-            password="ValuationPass123!",
-            full_name="Valuation Officer",
+        self.evaluation_user = User.objects.create_user(
+            username="evaluation",
+            email="evaluation@example.com",
+            password="EvaluationPass123!",
+            full_name="Evaluation Officer",
             role=UserRole.DEPT_OFFICER,
-            department=self.valuation_department,
+            department=self.evaluation_department,
+        )
+        self.financial_user = User.objects.create_user(
+            username="financial",
+            email="financial@example.com",
+            password="FinancialPass123!",
+            full_name="Financial Officer",
+            role=UserRole.DEPT_OFFICER,
+            department=self.financial_department,
         )
         self.head_user = User.objects.create_user(
             username="head",
@@ -191,7 +202,62 @@ class ApiSmokeTests(APITestCase):
             plan_version__plan_id=plan_id,
             review_stage=DepartmentReviewStage.PRELIMINARY,
         )
-        self.assertEqual(preliminary_reviews.count(), 3)
+        self.assertEqual(preliminary_reviews.count(), 4)
+
+        geometry_response = self.client.post(
+            "/api/geometry-assessments/",
+            {
+                "plan": plan_id,
+                "shape_type": "RECTANGLE",
+                "dimensions": {"length": 10, "width": 12},
+                "declared_area": "120.00",
+                "notes": "Manual assessment from uploaded drawing.",
+            },
+            format="json",
+        )
+        self.assertEqual(geometry_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(GeometryAssessment.objects.filter(plan_id=plan_id).count(), 1)
+        self.assertEqual(geometry_response.data["calculated_area"], "120.00")
+
+        client_exception_response = self.client.post(
+            "/api/geometry-exceptions/",
+            {
+                "plan": plan_id,
+                "reason": "GEOMETRY_UNAVAILABLE",
+                "justification": "Client should not bypass geometry.",
+                "risk_level": "MEDIUM",
+            },
+            format="json",
+        )
+        self.assertEqual(client_exception_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.authenticate(self.head_user)
+        unrelated_head_exception_response = self.client.post(
+            "/api/geometry-exceptions/",
+            {
+                "plan": plan_id,
+                "reason": "DRAWING_UNCLEAR",
+                "justification": "Planning head is not routed to this preliminary plan.",
+                "risk_level": "LOW",
+            },
+            format="json",
+        )
+        self.assertEqual(unrelated_head_exception_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.authenticate(self.evaluation_user)
+        exception_response = self.client.post(
+            "/api/geometry-exceptions/",
+            {
+                "plan": plan_id,
+                "reason": "DRAWING_UNCLEAR",
+                "justification": "Manual verification completed with unclear PDF geometry.",
+                "risk_level": "HIGH",
+                "requires_follow_up": True,
+            },
+            format="json",
+        )
+        self.assertEqual(exception_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(GeometryException.objects.filter(plan_id=plan_id).count(), 1)
 
         self.authenticate(self.housing_user)
         housing_response = self.client.post(
@@ -209,13 +275,21 @@ class ApiSmokeTests(APITestCase):
         )
         self.assertEqual(estates_response.status_code, status.HTTP_200_OK)
 
-        self.authenticate(self.valuation_user)
-        valuation_response = self.client.post(
-            f"/api/department-reviews/{preliminary_reviews.get(department=self.valuation_department).id}/evaluate/",
+        self.authenticate(self.evaluation_user)
+        evaluation_response = self.client.post(
+            f"/api/department-reviews/{preliminary_reviews.get(department=self.evaluation_department).id}/evaluate/",
             {"role": "OFFICER", "status": "APPROVED", "comment": "", "amount_payable": "100.00"},
             format="json",
         )
-        self.assertEqual(valuation_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(evaluation_response.status_code, status.HTTP_200_OK)
+
+        self.authenticate(self.financial_user)
+        financial_response = self.client.post(
+            f"/api/department-reviews/{preliminary_reviews.get(department=self.financial_department).id}/evaluate/",
+            {"role": "OFFICER", "status": "APPROVED", "comment": ""},
+            format="json",
+        )
+        self.assertEqual(financial_response.status_code, status.HTTP_200_OK)
 
         download_plan_response = self.client.get(f"/api/plans/{plan_id}/download/")
         self.assertEqual(download_plan_response.status_code, status.HTTP_200_OK)

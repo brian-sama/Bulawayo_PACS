@@ -21,7 +21,8 @@ from .models import (
     DepartmentReviewStage,
     ChecklistTemplate, RequiredDocument, SubmittedDocument,
     ProformaInvoice, ProformaLineItem, PaymentReceipt, ProformaInvoiceStatus,
-    FinalDecision, Notification,
+    FinalDecision, Notification, GeometryAssessment, GeometryException,
+    GeometryExceptionReason, GeometryRiskLevel, GeometryShapeType,
 )
 from .engines import AreaCalculationEngine, AutoFlaggingEngine
 from .serializers import (
@@ -33,7 +34,8 @@ from .serializers import (
     ChecklistTemplateSerializer, RequiredDocumentSerializer,
     SubmittedDocumentSerializer, ProformaInvoiceSerializer,
     ProformaLineItemSerializer, PaymentReceiptSerializer,
-    FinalDecisionSerializer, NotificationSerializer, CategoryDepartmentMappingSerializer
+    FinalDecisionSerializer, NotificationSerializer, CategoryDepartmentMappingSerializer,
+    GeometryAssessmentSerializer, GeometryExceptionSerializer,
 )
 from .permissions import IsAdmin, IsStaffOrAbove, IsReceptionOrAbove, IsOwnerOrStaff
 from .services.notifications import dispatch_notification
@@ -54,50 +56,113 @@ def log_action(user, action, target_model, target_id, old_value=None, new_value=
 
 
 PRELIMINARY_DEPARTMENTS = (
-    ('Housing Office', 'HOUSING', 1),
-    ('Estates Department', 'ESTATES', 2),
-    ('Valuation Department', 'VALUATION', 3),
+    {
+        'name': 'Housing Section',
+        'code': 'HOUSING',
+        'display_order': 1,
+        'aliases': ('Housing Office',),
+    },
+    {
+        'name': 'Estates Section',
+        'code': 'ESTATES',
+        'display_order': 2,
+        'aliases': ('Estates Department',),
+    },
+    {
+        'name': 'Evaluation Section',
+        'code': 'EVALUATION',
+        'display_order': 3,
+        'aliases': ('Valuation Department',),
+    },
+    {
+        'name': 'Financial Services Department',
+        'code': 'FINANCE',
+        'display_order': 4,
+        'aliases': ('Financial Services', 'Finance Department'),
+    },
 )
 
 
 def _get_or_create_preliminary_departments():
     departments = []
-    for name, code, order in PRELIMINARY_DEPARTMENTS:
-        dept, _ = Department.objects.get_or_create(
-            name=name,
-            defaults={'code': code, 'display_order': order, 'is_required': True},
+    for item in PRELIMINARY_DEPARTMENTS:
+        name = item['name']
+        code = item['code']
+        order = item['display_order']
+        aliases = item.get('aliases', ())
+
+        dept = (
+            Department.objects.filter(code=code).first()
+            or Department.objects.filter(name=name).first()
+            or Department.objects.filter(name__in=aliases).first()
         )
+
+        if not dept:
+            dept = Department.objects.create(
+                name=name,
+                code=code,
+                display_order=order,
+                is_required=False,
+            )
+
         updated = False
-        if not dept.code:
+        if dept.name != name and not Department.objects.filter(name=name).exclude(pk=dept.pk).exists():
+            dept.name = name
+            updated = True
+        if dept.code != code:
             dept.code = code
             updated = True
         if dept.display_order != order:
             dept.display_order = order
             updated = True
-        if not dept.is_required:
-            dept.is_required = True
+        if dept.is_required:
+            dept.is_required = False
             updated = True
         if updated:
-            dept.save(update_fields=['code', 'display_order', 'is_required'])
+            dept.save(update_fields=['name', 'code', 'display_order', 'is_required'])
         departments.append(dept)
     return departments
 
 
+def _evaluation_department(review):
+    code = (review.department.code or '').upper()
+    name = (review.department.name or '').upper()
+    return code in ('EVALUATION', 'VALUATION') or 'EVALUATION' in name or 'VALUATION' in name
+
+
+def _ensure_preliminary_reviews(plan):
+    current_version = plan.get_current_version()
+    if not current_version:
+        return DepartmentReview.objects.none()
+
+    for dept in _get_or_create_preliminary_departments():
+        DepartmentReview.objects.get_or_create(
+            plan_version=current_version,
+            department=dept,
+            review_stage=DepartmentReviewStage.PRELIMINARY,
+            defaults={
+                'officer_status': DepartmentReviewStatus.PENDING,
+                'head_status': DepartmentReviewStatus.PENDING,
+            },
+        )
+
+    return plan.get_current_reviews(DepartmentReviewStage.PRELIMINARY)
+
+
 def _preliminary_reviews_complete(plan):
-    reviews = plan.get_current_reviews(DepartmentReviewStage.PRELIMINARY)
+    reviews = _ensure_preliminary_reviews(plan)
     if reviews.count() < len(PRELIMINARY_DEPARTMENTS):
         return False
 
-    valuation_seen = False
+    evaluation_seen = False
     for review in reviews:
         if review.officer_status != DepartmentReviewStatus.OFFICER_APPROVED:
             return False
-        code = (review.department.code or '').upper()
-        if code == 'VALUATION':
-            valuation_seen = True
+        if _evaluation_department(review):
+            evaluation_seen = True
             if review.amount_payable is None or review.amount_payable <= 0:
                 return False
-    return valuation_seen
+    return evaluation_seen
 
 
 def _stream_field_file(instance, field_name, filename):
@@ -111,6 +176,157 @@ def _stream_field_file(instance, field_name, filename):
         return response
     except FileNotFoundError:
         return Response({'error': 'File not found on server.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+def _as_decimal(value, default=None):
+    if value in [None, '']:
+        return default
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+
+
+def _as_bool(value, default=False):
+    if value in [None, '']:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+def _plan_is_routed_to_department(plan, department):
+    if not department:
+        return False
+    return DepartmentReview.objects.filter(
+        plan_version__plan=plan,
+        department=department,
+    ).exists()
+
+
+def _can_manage_plan_geometry(user, plan, allow_client=False):
+    if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER]:
+        return True
+    if allow_client and user.role == UserRole.CLIENT:
+        return plan.client_id == user.id
+    if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD]:
+        return _plan_is_routed_to_department(plan, user.department)
+    return False
+
+
+def _record_geometry_assessment(plan, user, payload, request=None):
+    declared_area = _as_decimal(payload.get('declared_area'), plan.declared_area)
+    dimensions = payload.get('dimensions') or {}
+    shape_type = (payload.get('shape_type') or payload.get('type') or '').upper()
+    if shape_type not in GeometryShapeType.values:
+        shape_type = GeometryShapeType.MANUAL
+
+    engine = AreaCalculationEngine()
+    calculated_float = engine.calculate_shape_area({
+        'shape_type': shape_type,
+        'dimensions': dimensions,
+    })
+    calculated_area = Decimal(str(round(calculated_float, 2)))
+    difference = abs((declared_area or Decimal('0')) - calculated_area)
+    tolerance = (declared_area or Decimal('0')) * Decimal('0.02')
+    tolerance_exceeded = bool(declared_area and difference > tolerance)
+
+    version_id = payload.get('version')
+    version = None
+    if version_id:
+        version = PlanVersion.objects.filter(pk=version_id, plan=plan).first()
+    if not version:
+        version = plan.get_current_version()
+
+    assessment = GeometryAssessment.objects.create(
+        plan=plan,
+        version=version,
+        shape_type=shape_type,
+        dimensions=dimensions,
+        declared_area=declared_area,
+        calculated_area=calculated_area,
+        difference=difference,
+        tolerance_exceeded=tolerance_exceeded,
+        notes=payload.get('notes', ''),
+        file_page_reference=payload.get('file_page_reference', ''),
+        assessed_by=user,
+    )
+
+    log_action(
+        user, 'GEOMETRY_ASSESSMENT_CREATED', 'GeometryAssessment', assessment.id,
+        new_value={
+            'plan': plan.plan_id,
+            'shape_type': shape_type,
+            'calculated_area': str(calculated_area),
+            'difference': str(difference),
+            'tolerance_exceeded': tolerance_exceeded,
+        },
+        request=request,
+    )
+
+    if tolerance_exceeded:
+        Flag.objects.get_or_create(
+            plan=plan,
+            flag_type=FlagType.WARNING,
+            category=FlagCategory.AREA_MISMATCH,
+            message=f'Geometry assessment warning: declared area {declared_area} sqm, calculated area {calculated_area} sqm, difference {difference} sqm.',
+            defaults={},
+        )
+
+    return assessment
+
+
+def _is_geometry_exception_authorized(user):
+    if user.role in [UserRole.ADMIN, UserRole.FINAL_APPROVER, UserRole.DEPT_HEAD]:
+        return True
+    if user.role == UserRole.DEPT_OFFICER and user.department:
+        code = (user.department.code or '').upper()
+        name = (user.department.name or '').upper()
+        return code in ('EVALUATION', 'VALUATION') or 'EVALUATION' in name or 'VALUATION' in name
+    return False
+
+
+def _record_geometry_exception(plan, user, payload, request=None):
+    if not _is_geometry_exception_authorized(user):
+        return None
+
+    exception = GeometryException.objects.create(
+        plan=plan,
+        reason=payload.get('reason', GeometryExceptionReason.GEOMETRY_UNAVAILABLE),
+        justification=payload.get('justification', ''),
+        risk_level=payload.get('risk_level', GeometryRiskLevel.MEDIUM),
+        requires_follow_up=_as_bool(payload.get('requires_follow_up'), True),
+        approved_by=user,
+    )
+
+    log_action(
+        user, 'GEOMETRY_EXCEPTION_CREATED', 'GeometryException', exception.id,
+        new_value={
+            'plan': plan.plan_id,
+            'reason': exception.reason,
+            'risk_level': exception.risk_level,
+            'requires_follow_up': exception.requires_follow_up,
+        },
+        request=request,
+    )
+
+    message = (
+        f'Geometry assessment bypassed with justification. Reason: {exception.get_reason_display()}. '
+        f'Risk level: {exception.risk_level}.'
+    )
+    if exception.risk_level == GeometryRiskLevel.HIGH:
+        message += ' High-risk exception requires department head confirmation before final approval.'
+
+    Flag.objects.get_or_create(
+        plan=plan,
+        flag_type=FlagType.WARNING,
+        category=FlagCategory.AREA_MISMATCH,
+        message=message,
+        defaults={},
+    )
+    return exception
 
 
 def _check_and_advance_to_final_decision(plan):
@@ -422,6 +638,19 @@ class PlanViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 print(f"Error parsing shapes: {e}")
 
+        geometry_assessments_raw = request.data.get('geometry_assessments')
+        if geometry_assessments_raw:
+            try:
+                import json
+                for assessment_payload in json.loads(geometry_assessments_raw):
+                    _record_geometry_assessment(plan, request.user, assessment_payload, request=request)
+                latest_assessment = plan.geometry_assessments.order_by('-created_at').first()
+                if latest_assessment:
+                    plan.calculated_area = latest_assessment.calculated_area
+                    plan.save(update_fields=['calculated_area'])
+            except Exception as e:
+                print(f"Error parsing geometry assessments: {e}")
+
         plan.status = PlanStatus.DRAFT
         plan.save(update_fields=['status'])
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -709,9 +938,10 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         # Determine required departments
         required_mappings = CategoryDepartmentMapping.objects.filter(category=plan.category)
+        preliminary_codes = [item['code'] for item in PRELIMINARY_DEPARTMENTS] + ['VALUATION']
         target_depts = ([m.department for m in required_mappings]
                         if required_mappings.exists()
-                        else list(Department.objects.filter(is_required=True)))
+                        else list(Department.objects.filter(is_required=True).exclude(code__in=preliminary_codes)))
 
         created_count = 0
         for dept in target_depts:
@@ -999,6 +1229,7 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
                 'APPROVED':    DepartmentReviewStatus.OFFICER_APPROVED,
                 'REJECTED':    DepartmentReviewStatus.OFFICER_REJECTED,
                 'CORRECTIONS': DepartmentReviewStatus.OFFICER_CORRECTIONS,
+                'CORRECTIONS_REQUIRED': DepartmentReviewStatus.OFFICER_CORRECTIONS,
             }
             if decision not in status_map:
                 return Response({'error': f'Invalid status. Valid options: {list(status_map.keys())}'}, status=400)
@@ -1006,10 +1237,10 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             amount_payable = review.amount_payable
             if review.review_stage == DepartmentReviewStage.PRELIMINARY:
                 raw_amount = request.data.get('amount_payable')
-                if (review.department.code or '').upper() == 'VALUATION':
+                if _evaluation_department(review):
                     if raw_amount in [None, '']:
                         return Response(
-                            {'error': 'Valuation must provide amount_payable before approval.'},
+                            {'error': 'Evaluation must provide amount_payable before approval.'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     try:
@@ -1044,6 +1275,7 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
 
             status_map = {
                 'APPROVED': DepartmentReviewStatus.HEAD_CONFIRMED,
+                'HEAD_CONFIRMED': DepartmentReviewStatus.HEAD_CONFIRMED,
                 'REJECTED': DepartmentReviewStatus.HEAD_REJECTED,
             }
             if decision not in status_map:
@@ -1087,7 +1319,7 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
                 for rec in receptionists:
                     dispatch_notification(
                         rec, 'PRELIMINARY_READY_FOR_PROFORMA',
-                        f'Plan {plan.plan_id} has completed Housing, Estates, and Valuation verification and is ready for proforma issuance.',
+                        f'Plan {plan.plan_id} has completed Housing, Estates, Evaluation, and Financial Services verification and is ready for proforma issuance.',
                         subject=f'Preliminary Complete: {plan.plan_id}'
                     )
         else:
@@ -1151,6 +1383,68 @@ class FlagViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────────
 # AUDIT LOG
 # ─────────────────────────────────────────────
+
+class GeometryAssessmentViewSet(viewsets.ModelViewSet):
+    serializer_class = GeometryAssessmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = GeometryAssessment.objects.select_related('plan', 'version', 'assessed_by')
+        plan_id = self.request.query_params.get('plan')
+        if plan_id:
+            qs = qs.filter(plan_id=plan_id)
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD] and user.department:
+            return qs.filter(plan__versions__department_reviews__department=user.department).distinct()
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        plan = get_object_or_404(Plan, pk=request.data.get('plan'))
+        if request.user.role == UserRole.RECEPTION:
+            return Response({'error': 'Reception cannot create geometry assessments.'}, status=403)
+        if not _can_manage_plan_geometry(request.user, plan, allow_client=True):
+            return Response({'error': 'You are not authorized to create geometry assessments for this plan.'}, status=403)
+
+        assessment = _record_geometry_assessment(plan, request.user, request.data, request=request)
+        return Response(
+            GeometryAssessmentSerializer(assessment, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
+
+
+class GeometryExceptionViewSet(viewsets.ModelViewSet):
+    serializer_class = GeometryExceptionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = GeometryException.objects.select_related('plan', 'approved_by')
+        plan_id = self.request.query_params.get('plan')
+        if plan_id:
+            qs = qs.filter(plan_id=plan_id)
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        if user.role in [UserRole.DEPT_OFFICER, UserRole.DEPT_HEAD] and user.department:
+            return qs.filter(plan__versions__department_reviews__department=user.department).distinct()
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        if not _is_geometry_exception_authorized(request.user):
+            return Response({'error': 'You are not authorized to bypass geometry assessment.'}, status=403)
+        plan = get_object_or_404(Plan, pk=request.data.get('plan'))
+        if not _can_manage_plan_geometry(request.user, plan):
+            return Response({'error': 'You are not authorized to bypass geometry assessment for this plan.'}, status=403)
+        justification = request.data.get('justification', '').strip()
+        if len(justification) < 10:
+            return Response({'error': 'Justification must be at least 10 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+        exception = _record_geometry_exception(plan, request.user, request.data, request=request)
+        return Response(
+            GeometryExceptionSerializer(exception, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
+
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.select_related('user').order_by('-timestamp')
@@ -1325,10 +1619,92 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
             return qs.filter(plan__client=user)
         return qs
 
+    def get_permissions(self):
+        if self.action in ['create', 'add_line_item', 'record_payment', 'confirm_payment']:
+            return [IsReceptionOrAbove()]
+        return [IsAuthenticated()]
+
+    def create(self, request, *args, **kwargs):
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can issue proforma invoices.'}, status=403)
+
+        line_items = request.data.get('line_items', [])
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            invoice = serializer.save(issued_by=request.user)
+            for item in line_items:
+                line_payload = dict(item)
+                line_payload['invoice'] = invoice.id
+                line_serializer = ProformaLineItemSerializer(data=line_payload)
+                line_serializer.is_valid(raise_exception=True)
+                line_serializer.save(invoice=invoice)
+            invoice.recalculate_totals()
+
+            plan = invoice.plan
+            old_status = plan.status
+            plan.status = PlanStatus.PROFORMA_ISSUED
+            plan.save(update_fields=['status'])
+
+            log_action(
+                request.user,
+                'PROFORMA_ISSUED',
+                'ProformaInvoice',
+                invoice.id,
+                old_value={'plan_status': old_status},
+                new_value={'plan_status': plan.status, 'total_usd': str(invoice.total_usd)},
+                request=request,
+            )
+
+            dispatch_notification(
+                plan.client,
+                'PROFORMA_ISSUED',
+                f'Proforma invoice {invoice.invoice_number} has been issued for application {plan.plan_id}.',
+                subject=f'Proforma Issued - {invoice.invoice_number}',
+            )
+
+        return Response(self.get_serializer(invoice).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
+    def download(self, request, pk=None):
+        invoice = self.get_object()
+        buffer = BytesIO()
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        y = 72
+        lines = [
+            'BULAWAYO CITY COUNCIL',
+            'Proforma Invoice',
+            f'Invoice: {invoice.invoice_number}',
+            f'Plan: {invoice.plan.plan_id}',
+            f'Client: {invoice.plan.client.full_name}',
+            f'Stand: {invoice.plan.stand.stand_number}',
+            f'Issued: {invoice.issued_at:%Y-%m-%d}',
+            '',
+            'Line Items',
+        ]
+        for line in lines:
+            page.insert_text((72, y), line, fontsize=12, fontname='helv')
+            y += 22
+        for item in invoice.line_items.all():
+            page.insert_text((72, y), f'- {item.label} | Vote {item.vote_no} | USD {item.amount_usd} | ZWL {item.amount_zwl}', fontsize=10, fontname='helv')
+            y += 18
+        y += 12
+        page.insert_text((72, y), f'Total USD: {invoice.total_usd}', fontsize=12, fontname='helv')
+        y += 22
+        page.insert_text((72, y), f'Total ZWL: {invoice.total_zwl}', fontsize=12, fontname='helv')
+        doc.save(buffer, garbage=4, deflate=True)
+        doc.close()
+        buffer.seek(0)
+        return FileResponse(buffer, content_type='application/pdf', filename=f'{invoice.invoice_number}.pdf')
+
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def add_line_item(self, request, pk=None):
         invoice = self.get_object()
-        serializer = ProformaLineItemSerializer(data=request.data)
+        payload = request.data.copy()
+        payload['invoice'] = invoice.id
+        serializer = ProformaLineItemSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         serializer.save(invoice=invoice)
         invoice.recalculate_totals()
@@ -1337,9 +1713,11 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
     def record_payment(self, request, pk=None):
         invoice = self.get_object()
-        serializer = PaymentReceiptSerializer(data=request.data)
+        payload = request.data.copy()
+        payload['invoice'] = invoice.id
+        serializer = PaymentReceiptSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
-        serializer.save(invoice=invoice, recorded_by=request.user)
+        serializer.save(invoice=invoice, paid_by=invoice.plan.client, recorded_by=request.user)
         
         # Check if fully paid
         if invoice.status != ProformaInvoiceStatus.PAID:
@@ -1360,6 +1738,43 @@ class ProformaInvoiceViewSet(viewsets.ModelViewSet):
             )
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def confirm_payment(self, request, pk=None):
+        invoice = self.get_object()
+        payload = request.data.copy()
+        payload['invoice'] = invoice.id
+        serializer = PaymentReceiptSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        receipt = serializer.save(invoice=invoice, paid_by=invoice.plan.client, recorded_by=request.user)
+
+        if invoice.status != ProformaInvoiceStatus.PAID:
+            invoice.status = ProformaInvoiceStatus.PAID
+            invoice.save(update_fields=['status'])
+
+            plan = invoice.plan
+            old_status = plan.status
+            plan.status = PlanStatus.PAID
+            plan.save(update_fields=['status'])
+
+            log_action(
+                request.user,
+                'INVOICE_PAID',
+                'ProformaInvoice',
+                invoice.id,
+                old_value={'plan_status': old_status},
+                new_value={'plan_status': plan.status, 'receipt_number': receipt.receipt_number},
+                request=request,
+            )
+
+            dispatch_notification(
+                plan.client,
+                'PAYMENT_RECEIVED',
+                f'Payment for invoice {invoice.invoice_number} has been recorded. Your application {plan.plan_id} can now proceed to document submission.',
+                subject=f'Payment Received - {invoice.invoice_number}',
+            )
+
+        return Response(ProformaInvoiceSerializer(invoice, context={'request': request}).data, status=status.HTTP_200_OK)
 
 # ==========================================================
 

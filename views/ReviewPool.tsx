@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plan, UserProfile } from '../types';
 import * as api from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
+import { getWorkflowProfile, isPreliminaryGatekeeper } from './workflowProfiles';
 
 interface ReviewPoolProps {
     user: UserProfile;
@@ -13,6 +14,7 @@ export const ReviewPool: React.FC<ReviewPoolProps> = ({ user, onViewPlan }) => {
     const [plans, setPlans] = useState<Plan[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
+    const workflowProfile = getWorkflowProfile(user.department_name);
 
     useEffect(() => {
         loadPlans();
@@ -31,8 +33,7 @@ export const ReviewPool: React.FC<ReviewPoolProps> = ({ user, onViewPlan }) => {
                 const isTechnical = ['REVIEW_POOL', 'IN_REVIEW', 'UNDER_REVIEW'].includes(p.status);
                 const isPrelim = p.status === 'PRELIMINARY_SUBMITTED';
                 
-                const prelimDepts = ['Housing Office', 'Estates Department', 'Valuation Department'];
-                const isUserInPrelimDept = user.department_name && prelimDepts.includes(user.department_name);
+                const isUserInPrelimDept = isPreliminaryGatekeeper(user.department_name);
 
                 if (isUserInPrelimDept) {
                     return isTechnical || isPrelim;
@@ -56,8 +57,8 @@ export const ReviewPool: React.FC<ReviewPoolProps> = ({ user, onViewPlan }) => {
         <div className="space-y-6">
             <div className="flex justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <div>
-                    <h1 className="text-2xl font-black text-[#003366] tracking-tight uppercase">Technical Review Pool</h1>
-                    <p className="text-sm font-medium text-slate-400 mt-1">Select a submission to begin your department's technical evaluation.</p>
+                    <h1 className="text-2xl font-black text-[#003366] tracking-tight uppercase">{workflowProfile.queueTitle}</h1>
+                    <p className="text-sm font-medium text-slate-400 mt-1">{workflowProfile.focus}</p>
                 </div>
                 <div className="relative group">
                     <input
@@ -111,7 +112,7 @@ export const ReviewPool: React.FC<ReviewPoolProps> = ({ user, onViewPlan }) => {
                                             onClick={() => onViewPlan(plan)}
                                             className="px-4 py-2 bg-[#003366] text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black transition-all shadow-sm active:scale-95"
                                         >
-                                            Start Review
+                                            Open Workspace
                                         </button>
                                     </td>
                                 </tr>

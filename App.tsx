@@ -20,6 +20,7 @@ import { ReviewPool } from './views/ReviewPool';
 import { LandingPage } from './views/LandingPage';
 import { ReviewInterface } from './views/ReviewInterface';
 import { WorkflowConfig } from './views/WorkflowConfig';
+import { isPreliminaryGatekeeper } from './views/workflowProfiles';
 
 type ViewType = 'DASHBOARD' | 'REVIEWS' | 'PLAN_DETAILS' | 'ANALYTICS' | 'USER_MANAGEMENT' | 'RECEPTION' | 'FINAL_APPROVAL' | 'SEARCH_ARCHIVE' | 'IT_DASHBOARD' | 'AUDIT_LOGS' | 'WORKFLOW_CONFIG';
 
@@ -106,22 +107,29 @@ export const App: React.FC = () => {
         );
       case 'RECEPTION':
         return <ReceptionGateway 
+          user={user}
           selectedPlanId={selectedPlan?.id} 
           onBack={() => setCurrentView('DASHBOARD')} 
         />
       case 'PLAN_DETAILS':
         if (user?.role === 'RECEPTION') {
-          // Safety fallback: if a receptionist somehow lands here, show the gateway instead
           return <ReceptionGateway 
+            user={user}
             selectedPlanId={selectedPlan?.id} 
             onBack={() => setCurrentView('DASHBOARD')} 
           />
         }
+
+        const isPrelimDept = isPreliminaryGatekeeper(user?.department_name);
+
+        if (selectedPlan?.status === 'PRELIMINARY_SUBMITTED' && isPrelimDept) {
+          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+        }
+
         if (selectedPlan?.status === 'DRAFT' || selectedPlan?.status === 'PRELIMINARY_SUBMITTED' || user?.role === 'CLIENT') {
           return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
         } else {
           // Internal Workspace (Technical Review)
-          // Security safeguard: only staff departments or admin can see this
           const allowedTechnicalRoles = ['DEPT_OFFICER', 'DEPT_HEAD', 'ADMIN', 'FINAL_APPROVER'];
           if (!allowedTechnicalRoles.includes(user?.role || '')) {
              return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
@@ -146,8 +154,6 @@ export const App: React.FC = () => {
             <WorkflowConfig />
           </div>
         );
-      case 'RECEPTION':
-        return <ReceptionGateway user={user} />;
       case 'FINAL_APPROVAL':
         return <FinalApproval user={user} />;
       case 'REVIEWS':

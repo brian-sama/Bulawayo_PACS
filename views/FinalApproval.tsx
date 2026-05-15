@@ -124,7 +124,7 @@ export const FinalApproval: React.FC<FinalApprovalProps> = ({ user }) => {
             {/* Left: Queue */}
             <div className="w-[40%] space-y-4">
                 <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold text-slate-800">Final Approval Queue</h2>
+                    <h2 className="text-xl font-bold text-slate-800">Ready for Approval Queue</h2>
                     <span className="px-3 py-1 rounded-full bg-[#003366] text-white text-xs font-bold">
                         {plans.length} awaiting
                     </span>
@@ -169,9 +169,9 @@ export const FinalApproval: React.FC<FinalApprovalProps> = ({ user }) => {
 
                         {/* Header */}
                         <div className="border-b border-slate-100 p-6 bg-[#F9FAFB]">
-                            <h3 className="text-xl font-black text-[#003366] uppercase tracking-tight">Executive Seal</h3>
+                            <h3 className="text-xl font-black text-[#003366] uppercase tracking-tight">Final Approval Workspace</h3>
                             <p className="text-slate-500 text-sm mt-1">
-                                Reviewing consolidated department findings for <strong>{selectedPlan.plan_id}</strong>
+                                Reviewing consolidated gatekeeper, technical, and department head findings for <strong>{selectedPlan.plan_id}</strong>
                                 {selectedPlan.plan_number && <span className="ml-2 font-mono text-[#003366]">{selectedPlan.plan_number}</span>}
                             </p>
                         </div>
@@ -181,7 +181,7 @@ export const FinalApproval: React.FC<FinalApprovalProps> = ({ user }) => {
                             {/* ── Departmental Decisions Panel ───────────────────── */}
                             <div>
                                 <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">
-                                    Departmental Decisions
+                                    Consolidated Department Decisions
                                 </h4>
                                 {detailLoading ? (
                                     <p className="text-sm text-slate-400 animate-pulse">Loading reviews...</p>
@@ -285,7 +285,7 @@ export const FinalApproval: React.FC<FinalApprovalProps> = ({ user }) => {
                                 disabled={submitting || !password || notes.trim().length < 5}
                                 className="flex-[2] py-3 bg-[#003366] text-white rounded-xl font-black text-sm uppercase tracking-wide shadow-lg hover:bg-[#002244] disabled:opacity-50 transition-all"
                             >
-                                {submitting ? 'Sealing...' : '🔏 Apply Official Seal'}
+                                {submitting ? 'Sealing...' : 'Apply Official Seal'}
                             </button>
                         </div>
                     </div>

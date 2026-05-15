@@ -6,7 +6,7 @@ from .models import (
     DepartmentReview, CategoryDepartmentMapping,
     ChecklistTemplate, RequiredDocument, SubmittedDocument,
     ProformaInvoice, ProformaLineItem, PaymentReceipt,
-    FinalDecision, Notification,
+    FinalDecision, Notification, GeometryAssessment, GeometryException,
 )
 
 
@@ -85,6 +85,22 @@ class CommentAdmin(admin.ModelAdmin):
 class FlagAdmin(admin.ModelAdmin):
     list_display  = ['plan', 'flag_type', 'category', 'is_resolved', 'created_at']
     list_filter   = ['flag_type', 'category', 'is_resolved']
+
+
+@admin.register(GeometryAssessment)
+class GeometryAssessmentAdmin(admin.ModelAdmin):
+    list_display  = ['plan', 'shape_type', 'declared_area', 'calculated_area', 'difference', 'tolerance_exceeded', 'assessed_by', 'created_at']
+    list_filter   = ['shape_type', 'tolerance_exceeded']
+    search_fields = ['plan__plan_id', 'plan__plan_number', 'notes', 'file_page_reference']
+    readonly_fields = ['created_at']
+
+
+@admin.register(GeometryException)
+class GeometryExceptionAdmin(admin.ModelAdmin):
+    list_display  = ['plan', 'reason', 'risk_level', 'requires_follow_up', 'approved_by', 'created_at']
+    list_filter   = ['reason', 'risk_level', 'requires_follow_up']
+    search_fields = ['plan__plan_id', 'plan__plan_number', 'justification']
+    readonly_fields = ['created_at']
 
 
 @admin.register(Receipt)

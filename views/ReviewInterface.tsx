@@ -1,9 +1,13 @@
-
-import React, { useState, useEffect } from 'react';
-import { Plan, PlanStatus, DepartmentComment, Flag } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { DepartmentComment, DepartmentReview, Plan } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
-import { COLORS } from '../constants';
 import * as api from '../services/api';
+import {
+  getWorkflowProfile,
+  isPreliminaryGatekeeper,
+  ReviewVote,
+  WorkflowProfile,
+} from './workflowProfiles';
 
 interface ReviewInterfaceProps {
   plan: Plan;
@@ -11,33 +15,222 @@ interface ReviewInterfaceProps {
   user: any;
 }
 
-const PlanPin: React.FC<{ x: number, y: number, children: React.ReactNode, className?: string }> = ({ x, y, children, className }) => {
-  const ref = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    if (ref.current) {
-      ref.current.style.left = `${x}%`;
-      ref.current.style.top = `${y}%`;
-    }
-  }, [x, y]);
-  return <div ref={ref} className={className}>{children}</div>;
+const PlanPin: React.FC<{ x: number; y: number; children: React.ReactNode; className?: string }> = ({
+  x,
+  y,
+  children,
+  className,
+}) => (
+  <div className={className} style={{ left: `${x}%`, top: `${y}%` }}>
+    {children}
+  </div>
+);
+
+const formatDate = (value?: string | null) => {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Not recorded' : date.toLocaleDateString();
+};
+
+const displayStatus = (value?: string | null) => (value ? value.replace(/_/g, ' ') : 'PENDING');
+
+const departmentMatchesUser = (review: DepartmentReview, user: any) =>
+  review.department === user?.department || review.department_name === user?.department_name;
+
+const getPreferredReview = (reviews: DepartmentReview[], user: any, status: string) => {
+  const matches = reviews.filter(review => departmentMatchesUser(review, user));
+  const preferredStage = status === 'PRELIMINARY_SUBMITTED' && isPreliminaryGatekeeper(user?.department_name)
+    ? 'PRELIMINARY'
+    : 'TECHNICAL';
+
+  return matches.find(review => review.review_stage === preferredStage) || matches[0] || null;
+};
+
+const DetailRow: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => (
+  <div>
+    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+    <div className="mt-1 text-sm font-bold text-slate-700 leading-snug">{value || 'Not recorded'}</div>
+  </div>
+);
+
+const Checklist: React.FC<{ items: string[] }> = ({ items }) => (
+  <div className="space-y-2">
+    {items.map(item => (
+      <div key={item} className="flex items-start gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+        <span className="mt-1 h-2 w-2 rounded-full bg-[#003366]" />
+        <span className="text-xs font-semibold leading-relaxed text-slate-600">{item}</span>
+      </div>
+    ))}
+  </div>
+);
+
+const DocumentButton: React.FC<{ label: string; available: boolean; onClick?: () => void }> = ({ label, available, onClick }) => (
+  <button
+    type="button"
+    onClick={available ? onClick : undefined}
+    disabled={!available}
+    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs font-bold transition ${
+      available
+        ? 'border-slate-200 bg-white text-slate-700 hover:border-[#003366] hover:text-[#003366]'
+        : 'border-slate-100 bg-slate-50 text-slate-300'
+    }`}
+  >
+    <span>{label}</span>
+    <span className="text-[10px] uppercase tracking-widest">{available ? 'Open' : 'Missing'}</span>
+  </button>
+);
+
+const ContextPanel: React.FC<{
+  plan: Plan;
+  profile: WorkflowProfile;
+  activeReview: DepartmentReview | null;
+  openAttachment: (attachment: 'title-deed' | 'power-of-attorney' | 'structural-cert' | 'receipt-scan') => void;
+}> = ({ plan, profile, activeReview, openAttachment }) => {
+  const variance = Math.abs(Number(plan.calculated_area || 0) - Number(plan.declared_area || 0));
+  const declared = Number(plan.declared_area || 0);
+  const variancePercent = declared > 0 ? Math.round((variance / declared) * 100) : 0;
+  const invoices = (plan as any).proforma_invoices || [];
+  const submittedDocuments = (plan as any).submitted_documents || [];
+
+  if (profile.kind === 'OWNERSHIP') {
+    return (
+      <div className="space-y-4">
+        <DetailRow label="Applicant" value={plan.client_name} />
+        <DetailRow label="Recorded Owner" value={(plan as any).owner_name || plan.client_name} />
+        <DetailRow label="Representative" value={(plan as any).is_representative ? (plan as any).represents_owner_name : 'No'} />
+        <div className="space-y-2 pt-2">
+          <DocumentButton label="Title deed" available={Boolean(plan.title_deed)} onClick={() => openAttachment('title-deed')} />
+          <DocumentButton label="Power of attorney" available={Boolean(plan.power_of_attorney)} onClick={() => openAttachment('power-of-attorney')} />
+        </div>
+      </div>
+    );
+  }
+
+  if (profile.kind === 'LEASE') {
+    return (
+      <div className="space-y-4">
+        <DetailRow label="Stand" value={plan.stand_addr} />
+        <DetailRow label="Land Use" value={plan.category} />
+        <DetailRow label="Development Scope" value={plan.development_description} />
+        <DetailRow label="Current Review" value={displayStatus(activeReview?.officer_status)} />
+        <div className="rounded-lg border border-rose-100 bg-rose-50 p-3 text-xs font-semibold leading-relaxed text-rose-700">
+          Confirm expiry, conditions, and council land record alignment before approving the lease position.
+        </div>
+      </div>
+    );
+  }
+
+  if (profile.kind === 'EVALUATION') {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-amber-100 bg-amber-50 p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Area Check</p>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase text-amber-700/70">Declared</p>
+              <p className="text-lg font-black text-slate-800">{plan.declared_area || 0} sqm</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase text-amber-700/70">Calculated</p>
+              <p className="text-lg font-black text-slate-800">{plan.calculated_area || 0} sqm</p>
+            </div>
+          </div>
+          <p className={`mt-3 text-xs font-black ${variancePercent > 5 ? 'text-red-600' : 'text-emerald-600'}`}>
+            {variancePercent}% variance from declared area
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-3">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Tariff Basis</p>
+          <p className="mt-2 text-sm font-bold text-slate-700">{plan.stand_type || plan.category}</p>
+          <p className="mt-1 text-xs font-medium leading-relaxed text-slate-500">
+            Apply the active BCC schedule for stand type, building size, development scope, and plan category.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (profile.kind === 'FINANCIAL') {
+    return (
+      <div className="space-y-4">
+        <DetailRow label="Client" value={plan.client_name} />
+        <DetailRow label="Receipt Upload" value={plan.receipt_scan ? 'Receipt uploaded' : 'No receipt uploaded'} />
+        <DetailRow label="Invoices" value={`${invoices.length} proforma record(s)`} />
+        <DetailRow label="Submitted Documents" value={`${submittedDocuments.length} supporting document(s)`} />
+        <div className="space-y-2">
+          <DocumentButton label="Receipt evidence" available={Boolean(plan.receipt_scan)} onClick={() => openAttachment('receipt-scan')} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <DetailRow label="Department Focus" value={profile.stageLabel} />
+      <DetailRow label="Development Scope" value={plan.development_description} />
+      <DetailRow label="Declared Area" value={`${plan.declared_area || 0} sqm`} />
+      <DetailRow label="Calculated Area" value={`${plan.calculated_area || 0} sqm`} />
+      <div className="space-y-2 pt-2">
+        <DocumentButton label="Structural certificate" available={Boolean(plan.structural_cert)} onClick={() => openAttachment('structural-cert')} />
+        <DocumentButton label="Receipt evidence" available={Boolean(plan.receipt_scan)} onClick={() => openAttachment('receipt-scan')} />
+      </div>
+    </div>
+  );
 };
 
 export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan: initialPlan, onBack, user }) => {
   const [plan, setPlan] = useState<Plan>(initialPlan);
-  const [activeTab, setActiveTab] = useState<'VIEW' | 'COMMENTS'>('VIEW');
+  const [activeTab, setActiveTab] = useState<'DECISION' | 'COMMENTS'>('DECISION');
   const [comment, setComment] = useState('');
-  const [vote, setVote] = useState<'APPROVED' | 'CORRECTIONS_REQUIRED' | 'REJECTED'>('APPROVED');
-  const [pin, setPin] = useState<{ x: number, y: number } | null>(null);
+  const [vote, setVote] = useState<ReviewVote>('APPROVED');
+  const [pin, setPin] = useState<{ x: number; y: number } | null>(null);
   const [pinMode, setPinMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [localComments, setLocalComments] = useState<DepartmentComment[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<number | null>(null);
   const [availableVersions, setAvailableVersions] = useState<any[]>([]);
   const [userReviewId, setUserReviewId] = useState<number | null>(null);
+  const [activeReview, setActiveReview] = useState<DepartmentReview | null>(null);
+  const [amountPayable, setAmountPayable] = useState<number | string>('');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [zoom, setZoom] = useState(1);
+
+  const profile = useMemo(() => getWorkflowProfile(user?.department_name), [user?.department_name]);
+  const verdicts = user?.role === 'DEPT_HEAD'
+    ? [
+        { value: 'APPROVED' as ReviewVote, label: 'Confirm Department Decision', description: 'Accept the officer recommendation.' },
+        { value: 'REJECTED' as ReviewVote, label: 'Reject Department Decision', description: 'Return a binding department rejection.' },
+      ]
+    : profile.verdicts;
 
   useEffect(() => {
     refreshPlan();
-  }, [initialPlan.id]);
+  }, [initialPlan.id, user?.department]);
+
+  useEffect(() => {
+    let objectUrl = '';
+    let isMounted = true;
+    setPreviewLoading(true);
+    setPreviewUrl(null);
+
+    api.openAuthenticatedPdf(api.getPlanFileUrl(plan.id))
+      .then(url => {
+        objectUrl = url;
+        if (isMounted) setPreviewUrl(url);
+      })
+      .catch(() => {
+        if (isMounted) setPreviewUrl(null);
+      })
+      .finally(() => {
+        if (isMounted) setPreviewLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [plan.id, currentVersionId]);
 
   const refreshPlan = async () => {
     if (!initialPlan.id) return;
@@ -45,339 +238,362 @@ export const ReviewInterface: React.FC<ReviewInterfaceProps> = ({ plan: initialP
       const data = await api.getPlanDetail(initialPlan.id);
       setPlan(data);
 
-      // Determine the current version ID (latest one)
       if (data.versions && data.versions.length > 0) {
         const latest = data.versions[0];
         setCurrentVersionId(latest.id);
         setAvailableVersions(data.versions);
-      }
-
-      // Find the specific DepartmentReview record for this user's department
-      if (data.department_reviews) {
-        const myReview = data.department_reviews.find((r: any) =>
-          r.department === user.department || r.department_name === user.department_name
-        );
-        if (myReview) {
-          setUserReviewId(myReview.id);
+        try {
+          const comments = await api.getComments(latest.id);
+          setLocalComments(comments);
+        } catch {
+          setLocalComments([]);
         }
+      } else {
+        setCurrentVersionId(null);
+        setAvailableVersions([]);
+        setLocalComments([]);
       }
 
-      // Load comments for version
-      setLocalComments(data.comments || []);
+      const myReview = getPreferredReview(data.department_reviews || [], user, data.status);
+      setActiveReview(myReview);
+      setUserReviewId(myReview?.id || null);
+      setAmountPayable(myReview?.amount_payable ?? '');
     } catch (error) {
-      console.error("Failed to load plan details:", error);
+      console.error('Failed to load plan details:', error);
     }
   };
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const openAttachment = async (attachment: 'title-deed' | 'power-of-attorney' | 'structural-cert' | 'receipt-scan') => {
+    try {
+      const objectUrl = await api.openAuthenticatedPdf(api.getPlanAttachmentUrl(plan.id, attachment));
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+    } catch (error: any) {
+      alert(error.message || 'Unable to open the document.');
+    }
+  };
+
+  const handleCanvasClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!pinMode) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
     setPin({ x, y });
     setPinMode(false);
-    setActiveTab('VIEW');
+    setActiveTab('DECISION');
   };
 
   const handleSubmitReview = async () => {
-    if (!comment || !userReviewId) {
-      if (!userReviewId) alert("No active review assignment found for your department.");
+    if (!comment.trim()) {
+      alert('Please enter review remarks before submitting.');
       return;
     }
+
+    if (!userReviewId) {
+      alert('No active review assignment was found for your department.');
+      return;
+    }
+
+    if (profile.requiresAmount && vote === 'APPROVED' && (!amountPayable || Number(amountPayable) <= 0)) {
+      alert('Evaluation must set a valid amount payable before approval.');
+      return;
+    }
+
     setLoading(true);
     try {
-      // 1. Submit the actual review evaluation (Status update)
-      const role = user.role.includes('HEAD') ? 'HEAD' : 'OFFICER';
-      await api.evaluateReview(userReviewId, role, vote, comment);
+      const role = user.role === 'DEPT_HEAD' ? 'HEAD' : 'OFFICER';
+      const backendVote = vote === 'CORRECTIONS_REQUIRED' ? 'CORRECTIONS' : vote;
+      await api.evaluateReview(
+        userReviewId,
+        role,
+        backendVote,
+        comment.trim(),
+        profile.requiresAmount ? Number(amountPayable) : undefined,
+      );
 
-      // 2. Add the pinned comment if coordinate exists
       if (pin && currentVersionId) {
         await api.addComment({
           plan_version: currentVersionId,
           department: user.department || 1,
-          text: comment,
+          text: comment.trim(),
           status_vote: vote,
           pdf_pin_x: pin.x,
           pdf_pin_y: pin.y,
         });
       }
 
-      alert("Review submitted successfully.");
+      alert('Review submitted successfully.');
       setComment('');
       setPin(null);
-      refreshPlan(); // Sync status from backend
-    } catch (e) {
-      console.error(e);
-      alert("Failed to submit review.");
+      refreshPlan();
+    } catch (error: any) {
+      console.error(error);
+      alert(error.message || 'Failed to submit review.');
     } finally {
       setLoading(false);
     }
   };
 
+  const existingPins = localComments.filter(c => c.pdf_pin_x !== undefined && c.pdf_pin_x !== null);
+
   return (
-    <div className="flex flex-col h-full bg-[#f1f5f9] overflow-hidden">
-      {/* 1. Top Navigation Bar (The Context Header) */}
-      <div className="px-6 py-3 bg-white border-b border-slate-200 flex justify-between items-center shadow-sm z-20">
-        <div className="flex items-center gap-4">
+    <div className="flex h-full flex-col overflow-hidden bg-slate-100">
+      <div className="z-20 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3 shadow-sm">
+        <div className="flex min-w-0 items-center gap-4">
           <button
             onClick={onBack}
             aria-label="Go back"
             title="Go back"
-            className="p-2 hover:bg-slate-100 rounded-lg transition text-slate-500"
+            className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" />
             </svg>
-            <span className="sr-only">Go back</span>
           </button>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-[#003366] rounded flex items-center justify-center text-white font-bold text-xs">BCC</div>
-            <div>
-              <h2 className="text-sm font-bold text-slate-800 leading-none">{plan.plan_id}</h2>
-              <p className="text-[10px] text-slate-500 font-medium uppercase mt-1 tracking-wider">Plan ID</p>
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <h2 className="truncate text-base font-black text-[#003366]">{profile.title}</h2>
+              <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${profile.softAccent}`}>
+                {profile.stageLabel}
+              </span>
             </div>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              {plan.plan_id} {plan.plan_number ? `| ${plan.plan_number}` : ''} | {plan.stand_addr}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
-          <div className="flex flex-col items-end">
-            <StatusBadge status={plan.status} />
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Global Status</p>
+        <div className="flex items-center gap-4">
+          <StatusBadge status={plan.status} />
+          <div className="hidden text-right md:block">
+            <p className="text-xs font-black text-slate-800">{user.full_name}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{user.department_name || user.role}</p>
           </div>
-          <div className="h-8 w-px bg-slate-200"></div>
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <p className="text-xs font-bold text-slate-800">{user.full_name}</p>
-              <p className="text-[10px] text-slate-500 font-medium">{user.role}</p>
-            </div>
-            <div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
-            </div>
-          </div>
-          <button onClick={onBack} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-black transition shadow-sm">
-            Return to Queue
+          <button onClick={onBack} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-black uppercase tracking-widest text-white transition hover:bg-black">
+            Queue
           </button>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* 2. Left Sidebar (Information & Tool Palette) */}
-        <div className="w-72 bg-white border-r border-slate-200 flex flex-col shadow-sm z-10">
-          <div className="p-4 border-b border-slate-100 bg-slate-50/50">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Property Data</h3>
-            <div className="space-y-3">
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Stand Number</label>
-                <p className="text-sm font-bold text-slate-700">{plan.stand_addr.split('—')[0] || 'N/A'}</p>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Address / Suburb</label>
-                <p className="text-xs font-medium text-slate-600 leading-relaxed">{plan.stand_addr}</p>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Category</label>
-                <span className="ml-2 px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-bold">{plan.category}</span>
-              </div>
-            </div>
+        <aside className="w-[320px] shrink-0 overflow-y-auto border-r border-slate-200 bg-white">
+          <div className={`p-5 ${profile.accent}`}>
+            <p className="text-[10px] font-black uppercase tracking-[0.24em] opacity-70">Department Focus</p>
+            <p className="mt-3 text-sm font-bold leading-relaxed">{profile.focus}</p>
           </div>
 
-          <div className="p-4 border-b border-slate-100">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Area Verification</h3>
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-[11px] font-medium text-slate-500">Declared</span>
-                <span className="text-xs font-bold text-slate-700">{plan.declared_area} m²</span>
-              </div>
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-[11px] font-medium text-slate-500">Calculated</span>
-                <span className={`text-xs font-bold ${Math.abs((plan.calculated_area || 0) - (plan.declared_area || 0)) > (plan.declared_area || 0) * 0.05 ? 'text-red-600' : 'text-green-600'}`}>
-                  {plan.calculated_area} m²
-                </span>
-              </div>
-              <div className="pt-2 border-t border-slate-200">
-                <p className={`text-[10px] font-bold text-center ${Math.abs((plan.calculated_area || 0) - (plan.declared_area || 0)) > (plan.declared_area || 0) * 0.05 ? 'text-red-500' : 'text-green-500'}`}>
-                  {Math.abs((plan.calculated_area || 0) - (plan.declared_area || 0)) > (plan.declared_area || 0) * 0.05 ? '⚠️ AREA MISMATCH DETECTED' : '✅ AREA WITHIN TOLERANCE'}
-                </p>
-              </div>
-            </div>
-          </div>
+          <div className="space-y-6 p-5">
+            <section className="space-y-3">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Property Data</h3>
+              <DetailRow label="Stand Number" value={(plan as any).stand_number || plan.stand_addr?.split(',')[0]} />
+              <DetailRow label="Category" value={plan.category} />
+              <DetailRow label="Stand Type" value={plan.stand_type || 'Not recorded'} />
+              <DetailRow label="Submitted" value={formatDate(plan.submitted_at || plan.created_at)} />
+            </section>
 
-          <div className="p-4 flex-1">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Markup Tools</h3>
-            <div className="grid grid-cols-2 gap-2">
+            <section className="space-y-3">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Workspace Context</h3>
+              <ContextPanel plan={plan} profile={profile} activeReview={activeReview} openAttachment={openAttachment} />
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Checklist</h3>
+              <Checklist items={profile.checklists} />
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Review State</h3>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <DetailRow label="Officer" value={displayStatus(activeReview?.officer_status)} />
+                  <DetailRow label="Head" value={displayStatus(activeReview?.head_status)} />
+                </div>
+              </div>
+            </section>
+          </div>
+        </aside>
+
+        <main className="flex flex-1 flex-col overflow-hidden bg-slate-200">
+          <div className="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-4 py-3">
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setPinMode(!pinMode)}
-                aria-label="Add comment pin"
+                type="button"
+                onClick={() => setPinMode(value => !value)}
                 title="Add comment pin"
-                className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-xs font-bold transition ${pinMode ? 'bg-blue-600 text-white border-blue-700 scale-105' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`rounded-lg border px-3 py-2 text-xs font-black uppercase tracking-widest transition ${
+                  pinMode ? 'border-[#003366] bg-[#003366] text-white' : 'border-slate-300 bg-white text-slate-600 hover:border-[#003366]'
+                }`}
               >
-                <span className="text-lg">📍</span> {pinMode ? 'Active' : 'Pin'}
-                <span className="sr-only">Add comment pin</span>
+                {pinMode ? 'Pin Active' : 'Add Pin'}
               </button>
-              <button
-                aria-label="Measure tool"
-                title="Measure tool"
-                className="flex items-center justify-center gap-2 p-3 rounded-lg border border-slate-200 bg-white text-slate-600 text-xs font-bold hover:bg-slate-50 transition opacity-50 cursor-not-allowed"
-              >
-                <span className="text-lg">📏</span> Ruler
-                <span className="sr-only">Measure tool</span>
+              <button type="button" onClick={() => setZoom(value => Math.max(0.75, value - 0.1))} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-600">
+                -
+              </button>
+              <span className="w-14 text-center text-xs font-black text-slate-500">{Math.round(zoom * 100)}%</span>
+              <button type="button" onClick={() => setZoom(value => Math.min(1.35, value + 0.1))} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-600">
+                +
               </button>
             </div>
-            {pinMode && (
-              <p className="text-[9px] text-blue-600 font-bold mt-3 uppercase tracking-wider animate-pulse text-center">Click on drawing to set pin location</p>
-            )}
-          </div>
 
-          <div className="p-4 bg-slate-900 text-white mt-auto rounded-b-xl">
-            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-2">Version Controller</label>
             <select
               title="Select plan version"
               value={currentVersionId || ''}
-              onChange={(e) => setCurrentVersionId(Number(e.target.value))}
-              className="w-full bg-slate-800 border-none rounded p-2 text-xs font-bold outline-none ring-1 ring-white/10"
+              onChange={event => setCurrentVersionId(Number(event.target.value))}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-600 outline-none"
             >
-              {availableVersions.map(v => (
-                <option key={v.id} value={v.id}>Version {v.version_number} ({new Date(v.uploaded_at).toLocaleDateString()})</option>
+              {availableVersions.map(version => (
+                <option key={version.id} value={version.id}>
+                  Version {version.version_number} ({formatDate(version.created_at || version.uploaded_at)})
+                </option>
               ))}
               {availableVersions.length === 0 && <option>No versions found</option>}
             </select>
           </div>
-        </div>
 
-        {/* 3. Center Canvas (The Document Viewer Engine) */}
-        <div className="flex-1 bg-slate-200 relative overflow-auto p-8 flex justify-center">
-          <div
-            className={`bg-white shadow-2xl relative ${pinMode ? 'cursor-cell ring-4 ring-blue-400' : 'cursor-default'} min-w-[800px] aspect-[1/1.41] origin-top scale-100`}
-            onClick={handleCanvasClick}
-          >
-            {/* PDF Mock Content */}
-            <div className="w-full h-full p-12 border border-slate-300 pointer-events-none select-none">
-              <div className="border-[12px] border-slate-100 w-full h-full flex flex-col p-8 opacity-40">
-                <h1 className="text-5xl font-black text-slate-200 text-center mb-12">ARCHITECTURAL DRAWING</h1>
-                <div className="flex-1 border-4 border-slate-100 border-dashed rounded-3xl flex items-center justify-center">
-                  <p className="text-9xl font-bold text-slate-100">PLAN</p>
+          <div className="flex-1 overflow-auto p-8">
+            <div
+              className={`relative mx-auto min-h-[900px] w-[760px] origin-top bg-white shadow-2xl transition ${pinMode ? 'cursor-cell ring-4 ring-blue-400' : 'cursor-default'}`}
+              style={{ transform: `scale(${zoom})` }}
+              onClick={handleCanvasClick}
+            >
+              {previewLoading ? (
+                <div className="flex h-[980px] items-center justify-center text-xs font-black uppercase tracking-widest text-slate-400">
+                  Loading document preview
                 </div>
-              </div>
+              ) : previewUrl ? (
+                <iframe title="Plan document preview" src={previewUrl} className="h-[980px] w-full border-0" />
+              ) : (
+                <div className="h-[980px] border border-slate-300 p-12">
+                  <div className="flex h-full flex-col border-[12px] border-slate-100 p-8 opacity-50">
+                    <h1 className="mb-12 text-center text-4xl font-black text-slate-300">ARCHITECTURAL DRAWING</h1>
+                    <div className="flex flex-1 items-center justify-center rounded-lg border-4 border-dashed border-slate-200">
+                      <p className="text-7xl font-black text-slate-100">PLAN</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {pin && (
+                <PlanPin x={pin.x} y={pin.y} className="absolute -translate-x-1/2 -translate-y-full">
+                  <div className="rounded-full bg-blue-600 px-2 py-1 text-xs font-black text-white shadow-lg">New</div>
+                </PlanPin>
+              )}
+
+              {existingPins.map(c => (
+                <PlanPin key={c.id} x={c.pdf_pin_x || 0} y={c.pdf_pin_y || 0} className="group absolute -translate-x-1/2 -translate-y-full">
+                  <div className="h-5 w-5 rounded-full border-2 border-white bg-red-600 shadow" />
+                  <div className="absolute bottom-full left-1/2 z-30 mb-2 hidden w-52 -translate-x-1/2 rounded-lg bg-slate-900 p-3 text-white shadow-xl group-hover:block">
+                    <p className="border-b border-white/20 pb-1 text-[10px] font-black uppercase tracking-widest">{c.department || (c as any).department_name}</p>
+                    <p className="mt-2 text-xs leading-relaxed">{c.text}</p>
+                  </div>
+                </PlanPin>
+              ))}
             </div>
-
-            {/* Pin Overlays */}
-            {pin && (
-              <PlanPin
-                x={pin.x}
-                y={pin.y}
-                className="absolute animate-bounce -translate-x-1/2 -translate-y-full"
-              >
-                <div className="text-3xl filter drop-shadow-md">📍</div>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded -mt-8 whitespace-nowrap shadow-lg">New Comment</div>
-              </PlanPin>
-            )}
-
-            {/* Existing Pins */}
-            {localComments.filter(c => c.pdf_pin_x).map(c => (
-              <PlanPin
-                key={c.id}
-                x={c.pdf_pin_x || 0}
-                y={c.pdf_pin_y || 0}
-                className="absolute group -translate-x-1/2 -translate-y-full"
-              >
-                <div className={`text-2xl filter drop-shadow-sm cursor-help ${c.status_vote === 'REJECTED' ? 'brightness-75' : ''}`}>📍</div>
-                <div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] p-2 rounded shadow-xl w-48 mb-2 z-30">
-                  <p className="font-bold border-b border-white/20 pb-1 mb-1">{c.department}</p>
-                  <p className="opacity-90">{c.text}</p>
-                </div>
-              </PlanPin>
-            ))}
           </div>
-        </div>
+        </main>
 
-        {/* 4. Right Sidebar (Concurrent Collaboration & Sign-off) */}
-        <div className="w-84 bg-white border-l border-slate-200 flex flex-col shadow-sm">
+        <aside className="w-[380px] shrink-0 overflow-hidden border-l border-slate-200 bg-white">
           <div className="flex border-b border-slate-200">
             <button
-              onClick={() => setActiveTab('VIEW')}
-              className={`flex-1 py-4 text-[11px] font-bold uppercase tracking-widest transition ${activeTab === 'VIEW' ? 'text-blue-800 border-b-2 border-blue-800 bg-blue-50/30' : 'text-slate-400 hover:bg-slate-50'}`}
+              onClick={() => setActiveTab('DECISION')}
+              className={`flex-1 py-4 text-[11px] font-black uppercase tracking-widest transition ${activeTab === 'DECISION' ? 'border-b-2 border-[#003366] bg-blue-50/40 text-[#003366]' : 'text-slate-400 hover:bg-slate-50'}`}
             >
               Decision
             </button>
             <button
               onClick={() => setActiveTab('COMMENTS')}
-              className={`flex-1 py-4 text-[11px] font-bold uppercase tracking-widest transition ${activeTab === 'COMMENTS' ? 'text-blue-800 border-b-2 border-blue-800 bg-blue-50/30' : 'text-slate-400 hover:bg-slate-50'}`}
+              className={`flex-1 py-4 text-[11px] font-black uppercase tracking-widest transition ${activeTab === 'COMMENTS' ? 'border-b-2 border-[#003366] bg-blue-50/40 text-[#003366]' : 'text-slate-400 hover:bg-slate-50'}`}
             >
-              Round Table
+              Comments
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
-            {activeTab === 'VIEW' ? (
-              <div className="p-6 space-y-6">
-                <div className="bg-blue-600 rounded-xl p-5 text-white shadow-lg shadow-blue-200 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-2 opacity-10">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                  </div>
-                  <h4 className="text-xs font-bold uppercase tracking-widest opacity-80 mb-1">Your Submission</h4>
-                  <p className="text-lg font-bold leading-tight">Complete Technical Review</p>
+          <div className="h-full overflow-y-auto">
+            {activeTab === 'DECISION' ? (
+              <div className="space-y-5 p-5 pb-24">
+                <div className={`rounded-lg p-4 ${profile.accent}`}>
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-70">Your Submission</p>
+                  <p className="mt-2 text-lg font-black">{profile.actionTitle}</p>
                 </div>
 
-                <section className="space-y-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Verdict</label>
-                    <select
-                      aria-label="Select review verdict"
-                      title="Select review verdict"
-                      value={vote}
-                      onChange={(e: any) => setVote(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-                    >
-                      <option value="APPROVED">Approve (No Conditions)</option>
-                      <option value="CORRECTIONS_REQUIRED">Approve with Conditions</option>
-                      <option value="REJECTED">Reject / Revoke</option>
-                    </select>
+                <section className="space-y-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Verdict</p>
+                  <div className="space-y-2">
+                    {verdicts.map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setVote(option.value)}
+                        className={`w-full rounded-lg border p-3 text-left transition ${
+                          vote === option.value ? 'border-[#003366] bg-blue-50 text-[#003366]' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        <p className="text-sm font-black">{option.label}</p>
+                        <p className="mt-1 text-xs font-medium leading-relaxed opacity-75">{option.description}</p>
+                      </button>
+                    ))}
                   </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Technical Remarks</label>
-                    <textarea
-                      value={comment}
-                      onChange={(e) => setComment(e.target.value)}
-                      placeholder="Enter your detailed findings here..."
-                      className="w-full h-40 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-medium text-slate-600 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
-                    />
-                  </div>
-
-                  <button
-                    onClick={handleSubmitReview}
-                    disabled={loading || !comment}
-                    className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold text-sm hover:bg-black transition-all shadow-xl shadow-slate-200 disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {loading ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : 'Sign & Submit to Head'}
-                  </button>
                 </section>
+
+                {profile.requiresAmount && (
+                  <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-amber-800">Amount Payable</label>
+                    <input
+                      type="number"
+                      value={amountPayable}
+                      onChange={event => setAmountPayable(event.target.value)}
+                      placeholder="Enter calculated fee"
+                      className="mt-2 w-full rounded-lg border border-amber-200 bg-white px-4 py-3 text-sm font-black text-slate-700 outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                    <p className="mt-2 text-[10px] font-bold leading-relaxed text-amber-700">
+                      This amount is used by Reception to generate the proforma invoice.
+                    </p>
+                  </section>
+                )}
+
+                <section className="space-y-2">
+                  <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{profile.remarksLabel}</label>
+                  <textarea
+                    value={comment}
+                    onChange={event => setComment(event.target.value)}
+                    placeholder="Enter detailed findings, conditions, or correction notes."
+                    className="h-40 w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium leading-relaxed text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  {pin && <p className="text-[10px] font-bold uppercase tracking-widest text-blue-600">This remark will be pinned to the drawing.</p>}
+                </section>
+
+                <button
+                  onClick={handleSubmitReview}
+                  disabled={loading || !comment.trim()}
+                  className="flex w-full items-center justify-center rounded-lg bg-slate-900 py-4 text-sm font-black uppercase tracking-widest text-white shadow-lg transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {loading ? 'Submitting...' : user?.role === 'DEPT_HEAD' ? 'Submit Head Decision' : 'Submit Review'}
+                </button>
               </div>
             ) : (
-              <div className="p-4 space-y-4 bg-slate-50 min-h-full">
+              <div className="min-h-full space-y-4 bg-slate-50 p-4 pb-24">
                 {localComments.length === 0 && (
-                  <div className="p-8 text-center bg-white rounded-xl border border-dashed border-slate-200">
-                    <p className="text-xs font-bold text-slate-300 uppercase tracking-widest leading-relaxed">No shared comments<br />on this version yet</p>
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-white p-8 text-center">
+                    <p className="text-xs font-black uppercase tracking-widest text-slate-300">No shared comments on this version yet</p>
                   </div>
                 )}
-                {localComments.map((c) => (
-                  <div key={c.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                    <div className="flex justify-between items-start mb-2">
+                {localComments.map(c => (
+                  <div key={c.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="mb-2 flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-xs font-bold text-slate-800">{c.department}</p>
-                        <p className="text-[9px] font-medium text-slate-400 uppercase tracking-wider">{c.author_name}</p>
+                        <p className="text-xs font-black text-slate-800">{c.department || (c as any).department_name}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{c.author_name}</p>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-[4px] text-[9px] font-black uppercase ${c.status_vote === 'APPROVED' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-                        {c.status_vote}
+                      <span className={`rounded px-2 py-1 text-[9px] font-black uppercase ${c.status_vote === 'APPROVED' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
+                        {displayStatus(c.status_vote)}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-600 leading-relaxed font-medium">"{c.text}"</p>
+                    <p className="text-xs font-medium leading-relaxed text-slate-600">{c.text}</p>
                   </div>
                 ))}
               </div>
             )}
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );

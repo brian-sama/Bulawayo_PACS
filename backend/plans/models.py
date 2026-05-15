@@ -90,6 +90,30 @@ class FlagCategory(models.TextChoices):
     OTHER         = 'OTHER',         'Other'
 
 
+class GeometryShapeType(models.TextChoices):
+    RECTANGLE = 'RECTANGLE', 'Rectangle'
+    TRIANGLE  = 'TRIANGLE',  'Triangle'
+    CIRCLE    = 'CIRCLE',    'Circle'
+    TRAPEZIUM = 'TRAPEZIUM', 'Trapezium'
+    L_SHAPE   = 'L_SHAPE',   'L-Shaped Composite'
+    MANUAL    = 'MANUAL',    'Manual Entry'
+
+
+class GeometryExceptionReason(models.TextChoices):
+    GEOMETRY_UNAVAILABLE = 'GEOMETRY_UNAVAILABLE', 'Geometry unavailable'
+    INFORMATION_INCOMPLETE = 'INFORMATION_INCOMPLETE', 'Information incomplete'
+    DRAWING_UNCLEAR = 'DRAWING_UNCLEAR', 'Drawing unclear'
+    MANUAL_VERIFICATION_DONE = 'MANUAL_VERIFICATION_DONE', 'Manual verification done'
+    NOT_APPLICABLE = 'NOT_APPLICABLE', 'Not applicable'
+    OTHER = 'OTHER', 'Other'
+
+
+class GeometryRiskLevel(models.TextChoices):
+    LOW    = 'LOW',    'Low'
+    MEDIUM = 'MEDIUM', 'Medium'
+    HIGH   = 'HIGH',   'High'
+
+
 class RatesStatus(models.TextChoices):
     CLEAR       = 'CLEAR',       'Clear'
     OUTSTANDING = 'OUTSTANDING', 'Outstanding'
@@ -413,6 +437,50 @@ class PlanVersion(models.Model):
 # ─────────────────────────────────────────────
 # COMMENT
 # ─────────────────────────────────────────────
+
+class GeometryAssessment(models.Model):
+    plan = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name='geometry_assessments')
+    version = models.ForeignKey(
+        PlanVersion, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='geometry_assessments'
+    )
+    shape_type = models.CharField(max_length=30, choices=GeometryShapeType.choices)
+    dimensions = models.JSONField(default=dict)
+    declared_area = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    calculated_area = models.DecimalField(max_digits=12, decimal_places=2)
+    difference = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tolerance_exceeded = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+    file_page_reference = models.CharField(max_length=255, blank=True)
+    assessed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='geometry_assessments'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.shape_type} assessment for {self.plan.plan_id}'
+
+
+class GeometryException(models.Model):
+    plan = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name='geometry_exceptions')
+    reason = models.CharField(max_length=100, choices=GeometryExceptionReason.choices)
+    justification = models.TextField()
+    risk_level = models.CharField(max_length=20, choices=GeometryRiskLevel.choices)
+    requires_follow_up = models.BooleanField(default=True)
+    approved_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='geometry_exceptions'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.reason} geometry exception for {self.plan.plan_id}'
+
 
 class Comment(models.Model):
     plan_version = models.ForeignKey(PlanVersion, on_delete=models.CASCADE, related_name='comments')

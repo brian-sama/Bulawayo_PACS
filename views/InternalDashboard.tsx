@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plan, UserProfile } from '../types';
 import * as api from '../services/api';
 import { usePolling } from '../hooks/usePolling';
+import { getWorkflowProfile, isPreliminaryGatekeeper } from './workflowProfiles';
 
 interface InternalDashboardProps {
     user: UserProfile;
@@ -31,6 +32,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
     const [activeTab, setActiveTab] = useState<'PRIORITY' | 'RECENT'>('PRIORITY');
     const [plans, setPlans] = useState<Plan[]>([]);
     const [loading, setLoading] = useState(true);
+    const workflowProfile = getWorkflowProfile(user.department_name);
 
     const fetchPlans = async () => {
         try {
@@ -56,9 +58,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
             return ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED', 'PROFORMA_ISSUED', 'PAID', 'DOCUMENTS_PENDING_VERIFICATION'].includes(p.status);
         }
         
-        // Departments involved in Preliminary Review
-        const prelimDepts = ['Housing Office', 'Estates Department', 'Valuation Department'];
-        const isPrelimDept = user.department_name && prelimDepts.includes(user.department_name);
+        const isPrelimDept = isPreliminaryGatekeeper(user.department_name);
         
         if (isPrelimDept && p.status === 'PRELIMINARY_SUBMITTED') {
             return true;
@@ -139,15 +139,21 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                 <div className="xl:col-span-3 space-y-4">
                     <div className="flex justify-between items-end mb-4">
                         <div>
-                            <h2 className="text-2xl font-black text-[#003366] tracking-tight">Active Workspace</h2>
-                            <p className="text-sm font-medium text-slate-400 mt-1">Manage architectural submissions in your department's queue.</p>
+                            <h2 className="text-2xl font-black text-[#003366] tracking-tight">
+                                {user.role === 'DEPT_HEAD' ? workflowProfile.dashboardTitle : 'Active Workspace'}
+                            </h2>
+                            <p className="text-sm font-medium text-slate-400 mt-1">
+                                {user.role === 'DEPT_HEAD'
+                                    ? 'Monitor departmental decisions, pending reviews, officer throughput, and SLA pressure.'
+                                    : workflowProfile.focus}
+                            </p>
                         </div>
                         <div className="flex bg-slate-100 p-1.5 rounded-2xl gap-1">
                             <button
                                 onClick={() => setActiveTab('PRIORITY')}
                                 className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'PRIORITY' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
-                                {isReceptionist ? 'Action Queue' : user.role === 'DEPT_HEAD' ? 'Approval Queue' : 'Review Queue'}
+                                {isReceptionist ? 'Action Queue' : user.role === 'DEPT_HEAD' ? 'Approval Queue' : workflowProfile.queueTitle}
                             </button>
                             <button
                                 onClick={() => setActiveTab('RECENT')}
@@ -207,8 +213,12 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                 <div className="space-y-8">
                     <div className="bg-[#003366] p-6 rounded-3xl text-white shadow-xl relative overflow-hidden group">
                         <div className="relative z-10">
-                            <h3 className="text-lg font-black mb-1">Technical Summary</h3>
-                            <p className="text-[11px] text-blue-200/60 font-medium leading-relaxed mb-4">Starting fresh for the new period.</p>
+                            <h3 className="text-lg font-black mb-1">
+                                {isReceptionist ? 'Reception Summary' : workflowProfile.stageLabel}
+                            </h3>
+                            <p className="text-[11px] text-blue-200/60 font-medium leading-relaxed mb-4">
+                                {isReceptionist ? 'Intake completeness, payment handoff, and document verification.' : workflowProfile.focus}
+                            </p>
                             <div className="space-y-4">
                                 <div className="flex justify-between items-end border-b border-white/10 pb-4">
                                     <span className="text-[10px] font-bold text-blue-200 uppercase tracking-widest">Target Met</span>

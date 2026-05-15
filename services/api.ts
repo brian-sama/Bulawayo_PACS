@@ -305,6 +305,26 @@ export const addComment = async (payload: {
   apiFetch('/comments/', { method: 'POST', body: JSON.stringify(payload) });
 
 // ─────────────────────────────────────────────
+// GEOMETRY ASSESSMENTS & EXCEPTIONS
+// ─────────────────────────────────────────────
+
+export const getGeometryAssessments = async (planId: number): Promise<any[]> => {
+  const data = await apiFetch(`/geometry-assessments/?plan=${planId}`);
+  return Array.isArray(data) ? data : data.results ?? [];
+};
+
+export const createGeometryAssessment = async (payload: Record<string, any>): Promise<any> =>
+  apiFetch('/geometry-assessments/', { method: 'POST', body: JSON.stringify(payload) });
+
+export const getGeometryExceptions = async (planId: number): Promise<any[]> => {
+  const data = await apiFetch(`/geometry-exceptions/?plan=${planId}`);
+  return Array.isArray(data) ? data : data.results ?? [];
+};
+
+export const createGeometryException = async (payload: Record<string, any>): Promise<any> =>
+  apiFetch('/geometry-exceptions/', { method: 'POST', body: JSON.stringify(payload) });
+
+// ─────────────────────────────────────────────
 // DEPARTMENT REVIEWS
 // ─────────────────────────────────────────────
 
@@ -317,11 +337,12 @@ export const evaluateReview = async (
   reviewId: number,
   role: 'OFFICER' | 'HEAD',
   decisionStatus: string,
-  comment: string
+  comment: string,
+  amountPayable?: number
 ): Promise<any> =>
   apiFetch(`/department-reviews/${reviewId}/evaluate/`, {
     method: 'POST',
-    body: JSON.stringify({ role, status: decisionStatus, comment }),
+    body: JSON.stringify({ role, status: decisionStatus, comment, amount_payable: amountPayable }),
   });
 
 // ─────────────────────────────────────────────

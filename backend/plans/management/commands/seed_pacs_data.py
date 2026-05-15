@@ -9,34 +9,50 @@ class Command(BaseCommand):
 
         # 1. Create Departments (if not existing)
         depts_data = [
-            {'name': 'Housing Office', 'code': 'HOUSING', 'order': 1},
-            {'name': 'Estates Department', 'code': 'ESTATES', 'order': 2},
-            {'name': 'Valuation Department', 'code': 'VALUATION', 'order': 3},
-            {'name': 'Architectural Section', 'code': 'ARCH', 'order': 4},
-            {'name': 'Structural Section', 'code': 'STRUCT', 'order': 5},
-            {'name': 'Health Department', 'code': 'HEALTH', 'order': 6},
-            {'name': 'Fire Brigade', 'code': 'FIRE', 'order': 7},
-            {'name': 'Engineering Services', 'code': 'ENG', 'order': 8},
-            {'name': 'Town Planning', 'code': 'PLAN', 'order': 9},
-            {'name': 'Water & Sewerage', 'code': 'WATER', 'order': 10},
+            {'name': 'Housing Section', 'code': 'HOUSING', 'order': 1, 'is_required': False, 'aliases': ['Housing Office']},
+            {'name': 'Estates Section', 'code': 'ESTATES', 'order': 2, 'is_required': False, 'aliases': ['Estates Department']},
+            {'name': 'Evaluation Section', 'code': 'EVALUATION', 'order': 3, 'is_required': False, 'aliases': ['Valuation Department']},
+            {'name': 'Financial Services Department', 'code': 'FINANCE', 'order': 4, 'is_required': False, 'aliases': ['Financial Services']},
+            {'name': 'Building Control Section', 'code': 'BUILDING', 'order': 5, 'is_required': True, 'aliases': ['Building Inspections', 'Structural Section']},
+            {'name': 'Water & Sanitation Department', 'code': 'WATER', 'order': 6, 'is_required': True, 'aliases': ['Water & Sewerage']},
+            {'name': 'Fire Section', 'code': 'FIRE', 'order': 7, 'is_required': True, 'aliases': ['Fire Brigade', 'Fire & Safety']},
+            {'name': 'Trade & Works', 'code': 'TRADE_WORKS', 'order': 8, 'is_required': False, 'aliases': ['Engineering Services']},
+            {'name': 'NSSA Compliance', 'code': 'NSSA', 'order': 9, 'is_required': False, 'aliases': []},
+            {'name': 'ZESA', 'code': 'ZESA', 'order': 10, 'is_required': False, 'aliases': ['Electrical']},
         ]
 
         depts = {}
         for d in depts_data:
-            dept, created = Department.objects.get_or_create(
-                name=d['name'],
-                defaults={'code': d['code'], 'display_order': d['order']}
+            dept = (
+                Department.objects.filter(code=d['code']).first()
+                or Department.objects.filter(name=d['name']).first()
+                or Department.objects.filter(name__in=d.get('aliases', [])).first()
             )
+            created = False
+            if not dept:
+                dept = Department.objects.create(
+                    name=d['name'],
+                    code=d['code'],
+                    display_order=d['order'],
+                    is_required=d['is_required'],
+                )
+                created = True
             if not created:
                 updated = False
-                if not dept.code:
+                if dept.name != d['name'] and not Department.objects.filter(name=d['name']).exclude(pk=dept.pk).exists():
+                    dept.name = d['name']
+                    updated = True
+                if dept.code != d['code']:
                     dept.code = d['code']
                     updated = True
                 if dept.display_order != d['order']:
                     dept.display_order = d['order']
                     updated = True
+                if dept.is_required != d['is_required']:
+                    dept.is_required = d['is_required']
+                    updated = True
                 if updated:
-                    dept.save(update_fields=['code', 'display_order'])
+                    dept.save(update_fields=['name', 'code', 'display_order', 'is_required'])
                     self.stdout.write(f"Updated existing department '{dept.name}' with code '{dept.code}' and order '{dept.display_order}'")
             depts[d['code']] = dept
             if created:
@@ -44,10 +60,10 @@ class Command(BaseCommand):
 
         # 2. Create Category -> Department Mappings
         mappings = [
-            ('RESIDENTIAL', ['ARCH', 'STRUCT', 'ENG', 'HEALTH']),
-            ('COMMERCIAL', ['ARCH', 'STRUCT', 'ENG', 'HEALTH', 'FIRE', 'PLAN']),
-            ('INDUSTRIAL', ['ARCH', 'STRUCT', 'ENG', 'HEALTH', 'FIRE', 'PLAN', 'WATER']),
-            ('MIXED', ['ARCH', 'STRUCT', 'ENG', 'HEALTH', 'FIRE', 'PLAN']),
+            ('RESIDENTIAL', ['BUILDING', 'WATER']),
+            ('COMMERCIAL', ['BUILDING', 'WATER', 'FIRE']),
+            ('INDUSTRIAL', ['BUILDING', 'WATER', 'FIRE', 'TRADE_WORKS', 'NSSA', 'ZESA']),
+            ('MIXED', ['BUILDING', 'WATER', 'FIRE']),
         ]
 
         for cat, codes in mappings:

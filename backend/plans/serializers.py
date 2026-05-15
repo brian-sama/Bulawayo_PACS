@@ -5,7 +5,8 @@ from .models import (
     PlanVersion, Comment, Flag, Receipt, Approval, AuditLog,
     DepartmentReview, ChecklistTemplate, RequiredDocument,
     SubmittedDocument, ProformaInvoice, ProformaLineItem,
-    PaymentReceipt, FinalDecision, Notification, CategoryDepartmentMapping
+    PaymentReceipt, FinalDecision, Notification, CategoryDepartmentMapping,
+    GeometryAssessment, GeometryException
 )
 
 # ─────────────────────────────────────────────
@@ -380,6 +381,32 @@ class PlanListSerializer(serializers.ModelSerializer):
         return obj.flags.filter(is_resolved=False).count()
 
 
+class GeometryAssessmentSerializer(serializers.ModelSerializer):
+    assessed_by_name = serializers.CharField(source='assessed_by.full_name', read_only=True)
+
+    class Meta:
+        model = GeometryAssessment
+        fields = [
+            'id', 'plan', 'version', 'shape_type', 'dimensions',
+            'declared_area', 'calculated_area', 'difference',
+            'tolerance_exceeded', 'notes', 'file_page_reference',
+            'assessed_by', 'assessed_by_name', 'created_at',
+        ]
+        read_only_fields = ['id', 'assessed_by', 'assessed_by_name', 'created_at']
+
+
+class GeometryExceptionSerializer(serializers.ModelSerializer):
+    approved_by_name = serializers.CharField(source='approved_by.full_name', read_only=True)
+
+    class Meta:
+        model = GeometryException
+        fields = [
+            'id', 'plan', 'reason', 'justification', 'risk_level',
+            'requires_follow_up', 'approved_by', 'approved_by_name', 'created_at',
+        ]
+        read_only_fields = ['id', 'approved_by', 'approved_by_name', 'created_at']
+
+
 class PlanUpdateSerializer(PlanListSerializer):
     class Meta(PlanListSerializer.Meta):
         read_only_fields = PlanListSerializer.Meta.read_only_fields + [
@@ -398,6 +425,8 @@ class PlanDetailSerializer(PlanListSerializer):
     receipt             = ReceiptSerializer(read_only=True)
     approval            = ApprovalSerializer(read_only=True)
     department_reviews  = serializers.SerializerMethodField()
+    geometry_assessments = GeometryAssessmentSerializer(many=True, read_only=True)
+    geometry_exceptions  = GeometryExceptionSerializer(many=True, read_only=True)
     submitted_documents = SubmittedDocumentSerializer(many=True, read_only=True)
     proforma_invoices   = ProformaInvoiceSerializer(many=True, read_only=True)
     final_decision      = FinalDecisionSerializer(read_only=True)
@@ -405,7 +434,7 @@ class PlanDetailSerializer(PlanListSerializer):
     class Meta(PlanListSerializer.Meta):
         fields = PlanListSerializer.Meta.fields + [
             'versions', 'flags', 'receipt', 'approval',
-            'department_reviews', 'submitted_documents',
+            'department_reviews', 'geometry_assessments', 'geometry_exceptions', 'submitted_documents',
             'proforma_invoices', 'final_decision',
         ]
 

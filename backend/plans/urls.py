@@ -10,6 +10,8 @@ router.register(r'architects',           views.ArchitectViewSet,          basena
 router.register(r'properties',           views.PropertyViewSet,           basename='property')
 router.register(r'comments',             views.CommentViewSet,            basename='comment')
 router.register(r'flags',                views.FlagViewSet,               basename='flag')
+router.register(r'geometry-assessments', views.GeometryAssessmentViewSet, basename='geometryassessment')
+router.register(r'geometry-exceptions',  views.GeometryExceptionViewSet,  basename='geometryexception')
 router.register(r'audit-logs',           views.AuditLogViewSet,           basename='auditlog')
 router.register(r'department-reviews',   views.DepartmentReviewViewSet,   basename='departmentreview')
 router.register(r'checklist-templates',  views.ChecklistTemplateViewSet,  basename='checklisttemplate')

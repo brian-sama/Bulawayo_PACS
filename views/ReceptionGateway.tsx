@@ -4,6 +4,7 @@ import * as api from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
 import { ProformaGenerator, ProformaInvoiceView } from './ProformaInvoice';
 import { usePolling } from '../hooks/usePolling';
+import { isEvaluationDepartment } from './workflowProfiles';
 
 interface ReceptionGatewayProps {
     user: UserProfile;
@@ -175,10 +176,10 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user, select
 
     const allChecksPassed = COMPLIANCE_CHECKS.every(c => checklist[c.id]);
     const preliminaryReviews = ((selectedPlanDetail as any)?.department_reviews ?? []).filter((review: any) => review.review_stage === 'PRELIMINARY');
-    const valuationReview = preliminaryReviews.find((review: any) => review.department_name === 'Valuation Department');
-    const preliminaryReady = preliminaryReviews.length >= 3 && preliminaryReviews.every((review: any) =>
+    const evaluationReview = preliminaryReviews.find((review: any) => isEvaluationDepartment(review.department_name));
+    const preliminaryReady = preliminaryReviews.length >= 4 && preliminaryReviews.every((review: any) =>
         review.officer_status === 'OFFICER_APPROVED'
-    ) && Number(valuationReview?.amount_payable ?? 0) > 0;
+    ) && Number(evaluationReview?.amount_payable ?? 0) > 0;
     const submittedDocuments = (selectedPlanDetail as any)?.submitted_documents ?? [];
 
     const openSecurePdf = async (url: string) => {
@@ -352,7 +353,7 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user, select
                                                 <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center shadow-sm text-2xl shrink-0">📄</div>
                                                 <div>
                                                     <p className="font-black text-sm uppercase tracking-tight mb-1">Preliminary Submission Received</p>
-                                                    <p className="text-sm opacity-80 leading-relaxed italic">Housing must confirm ownership, Estates must confirm the lease, and Valuation must set the amount payable before reception can issue the proforma.</p>
+                                                    <p className="text-sm opacity-80 leading-relaxed italic">Housing must confirm ownership, Estates must confirm the lease, Evaluation must set the amount payable, and Financial Services must clear the account before reception can issue the proforma.</p>
                                                 </div>
                                             </div>
                                         )}
