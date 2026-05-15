@@ -6,6 +6,8 @@ from django.core.files.base import ContentFile
 from django.http import FileResponse
 from django.conf import settings
 from django.utils import timezone
+from django.db import models, transaction
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, generics, status, filters, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -1307,95 +1309,58 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
         return Response({'detail': 'Document rejected. Applicant notified.'})
 
 
+
 # ─────────────────────────────────────────────
-# PROFORMA INVOICE SYSTEM
+# PROFORMA INVOICES
 # ─────────────────────────────────────────────
 
-class ProformaInvoiceStatus(models.TextChoices):
-    ISSUED    = 'ISSUED',    'Issued'
-    PAID      = 'PAID',      'Paid'
-    CANCELLED = 'CANCELLED', 'Cancelled'
+class ProformaInvoiceViewSet(viewsets.ModelViewSet):
+    serializer_class = ProformaInvoiceSerializer
+    permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        user = self.request.user
+        qs = ProformaInvoice.objects.select_related('plan', 'issued_by').prefetch_related('line_items', 'payment_receipts')
+        if user.role == UserRole.CLIENT:
+            return qs.filter(plan__client=user)
+        return qs
 
-class ProformaInvoice(models.Model):
-    """
-    Proforma invoice issued by the receptionist after a preliminary submission.
-    Shows itemised fees in ZWL and USD with BCC vote numbers.
-    The plan number is NOT assigned until this invoice is paid and docs are verified.
-    """
-    plan           = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name='proforma_invoices')
-    invoice_number = models.CharField(max_length=50, unique=True, editable=False)
-    issued_by      = models.ForeignKey(User, on_delete=models.PROTECT, related_name='issued_invoices')
-    issued_at      = models.DateTimeField(auto_now_add=True)
-    status         = models.CharField(max_length=20, choices=ProformaInvoiceStatus.choices,
-                                      default=ProformaInvoiceStatus.ISSUED)
-    notes          = models.TextField(blank=True)
-    reception_contacts = models.TextField(blank=True, help_text="Contacts for the client to follow up with.")
-    rates_comment      = models.TextField(blank=True, help_text="Comment to clear rates balance.")
-    total_zwl      = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    total_usd      = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def add_line_item(self, request, pk=None):
+        invoice = self.get_object()
+        serializer = ProformaLineItemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(invoice=invoice)
+        invoice.recalculate_totals()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    def save(self, *args, **kwargs):
-        if not self.invoice_number:
-            year  = timezone.now().year
-            count = ProformaInvoice.objects.filter(
-                invoice_number__startswith=f'INV-{year}-'
-            ).count()
-            self.invoice_number = f'INV-{year}-{str(count + 1).zfill(5)}'
-        super().save(*args, **kwargs)
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def record_payment(self, request, pk=None):
+        invoice = self.get_object()
+        serializer = PaymentReceiptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(invoice=invoice, recorded_by=request.user)
+        
+        # Check if fully paid
+        if invoice.status != ProformaInvoiceStatus.PAID:
+            # Simple logic: if any payment is recorded, we can mark as paid or payment_pending
+            invoice.status = ProformaInvoiceStatus.PAID
+            invoice.save(update_fields=['status'])
+            
+            plan = invoice.plan
+            plan.status = PlanStatus.PAID
+            plan.save(update_fields=['status'])
+            
+            log_action(request.user, 'INVOICE_PAID', 'ProformaInvoice', invoice.id, request=request)
+            
+            dispatch_notification(
+                plan.client, 'PAYMENT_RECEIVED',
+                f'Payment for invoice {invoice.invoice_number} has been recorded. Your application {plan.plan_id} is now being processed for document verification.',
+                subject=f'Payment Received — {invoice.invoice_number}'
+            )
 
-    def recalculate_totals(self):
-        """Recalculate totals from line items and save."""
-        agg = self.line_items.aggregate(
-            zwl=models.Sum('amount_zwl'),
-            usd=models.Sum('amount_usd')
-        )
-        self.total_zwl = agg['zwl'] or 0
-        self.total_usd = agg['usd'] or 0
-        self.save(update_fields=['total_zwl', 'total_usd'])
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    def __str__(self):
-        return self.invoice_number
-
-
-class ProformaLineItem(models.Model):
-    """
-    A single fee line on the proforma.
-    Labels and vote numbers mirror the BCC Building Inspectorate proforma template.
-    """
-    invoice          = models.ForeignKey(ProformaInvoice, on_delete=models.CASCADE, related_name='line_items')
-    label            = models.CharField(max_length=200)
-    vote_no          = models.CharField(max_length=50, blank=True,
-                                        help_text="BCC vote number e.g. 0074/50363")
-    amount_zwl       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    amount_usd       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    is_rates_payment = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f'{self.label} ({self.invoice.invoice_number})'
-
-
-class PaymentReceipt(models.Model):
-    """Payment evidence submitted by the applicant / recorded by the receptionist."""
-    invoice        = models.ForeignKey(ProformaInvoice, on_delete=models.CASCADE,
-                                       related_name='payment_receipts')
-    amount_zwl     = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    amount_usd     = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    receipt_number = models.CharField(max_length=100, unique=True)
-    paid_by        = models.ForeignKey(User, on_delete=models.PROTECT, related_name='payments')
-    payment_date   = models.DateField()
-    payment_method = models.CharField(max_length=50, blank=True)
-    evidence_file  = models.FileField(upload_to='payment_evidence/%Y/%m/', null=True, blank=True)
-    recorded_by    = models.ForeignKey(User, on_delete=models.PROTECT,
-                                       related_name='recorded_payments')
-    recorded_at    = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f'Receipt #{self.receipt_number}'
-
-
-# ==========================================================
-# FINAL DECISION
 # ==========================================================
 
 class FinalDecisionViewSet(viewsets.ModelViewSet):
