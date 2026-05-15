@@ -80,9 +80,15 @@ export const App: React.FC = () => {
 
   const role = user?.role;
 
-  const handleViewPlan = (plan: Plan) => {
+  const handleViewPlan = (plan: any) => {
     setSelectedPlan(plan);
-    setCurrentView('PLAN_DETAILS');
+    
+    // Role-based redirection logic
+    if (user?.role === 'RECEPTION') {
+      setCurrentView('RECEPTION');
+    } else {
+      setCurrentView('PLAN_DETAILS');
+    }
   };
 
   const renderContent = () => {
@@ -98,13 +104,28 @@ export const App: React.FC = () => {
             onNavigate={(view) => setCurrentView(view)}
           />
         );
+      case 'RECEPTION':
+        return <ReceptionGateway 
+          selectedPlanId={selectedPlan?.id} 
+          onBack={() => setCurrentView('DASHBOARD')} 
+        />
       case 'PLAN_DETAILS':
-        if (!selectedPlan) return null;
-        if (role === 'CLIENT') {
+        if (user?.role === 'RECEPTION') {
+          // Safety fallback: if a receptionist somehow lands here, show the gateway instead
+          return <ReceptionGateway 
+            selectedPlanId={selectedPlan?.id} 
+            onBack={() => setCurrentView('DASHBOARD')} 
+          />
+        }
+        if (selectedPlan?.status === 'DRAFT' || selectedPlan?.status === 'PRELIMINARY_SUBMITTED' || user?.role === 'CLIENT') {
           return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
-        } else if (role === 'DEPT_OFFICER' || role === 'DEPT_HEAD') {
-          return <ReviewWorkspace planId={String(selectedPlan.id)} onClose={() => setCurrentView('REVIEWS')} userRole={role} />
         } else {
+          // Internal Workspace (Technical Review)
+          // Security safeguard: only staff departments or admin can see this
+          const allowedTechnicalRoles = ['DEPT_OFFICER', 'DEPT_HEAD', 'ADMIN', 'FINAL_APPROVER'];
+          if (!allowedTechnicalRoles.includes(user?.role || '')) {
+             return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+          }
           return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('REVIEWS')} />
         }
       case 'ANALYTICS':

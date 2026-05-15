@@ -55,6 +55,15 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
         if (isReceptionist) {
             return ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED', 'PROFORMA_ISSUED', 'PAID', 'DOCUMENTS_PENDING_VERIFICATION'].includes(p.status);
         }
+        
+        // Departments involved in Preliminary Review
+        const prelimDepts = ['Housing Office', 'Estates Department', 'Valuation Department'];
+        const isPrelimDept = user.department_name && prelimDepts.includes(user.department_name);
+        
+        if (isPrelimDept && p.status === 'PRELIMINARY_SUBMITTED') {
+            return true;
+        }
+
         return p.status === 'IN_REVIEW' || p.status === 'UNDER_REVIEW' || p.status === 'REVIEW_POOL';
     });
 

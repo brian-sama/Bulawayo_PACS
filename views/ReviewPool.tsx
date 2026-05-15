@@ -27,11 +27,18 @@ export const ReviewPool: React.FC<ReviewPoolProps> = ({ user, onViewPlan }) => {
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             );
             // Filter plans that are in the review pipeline
-            const pool = sorted.filter(p =>
-                p.status === 'REVIEW_POOL' ||
-                p.status === 'IN_REVIEW' ||
-                p.status === 'UNDER_REVIEW'
-            );
+            const pool = sorted.filter(p => {
+                const isTechnical = ['REVIEW_POOL', 'IN_REVIEW', 'UNDER_REVIEW'].includes(p.status);
+                const isPrelim = p.status === 'PRELIMINARY_SUBMITTED';
+                
+                const prelimDepts = ['Housing Office', 'Estates Department', 'Valuation Department'];
+                const isUserInPrelimDept = user.department_name && prelimDepts.includes(user.department_name);
+
+                if (isUserInPrelimDept) {
+                    return isTechnical || isPrelim;
+                }
+                return isTechnical;
+            });
             setPlans(pool);
         } catch (error) {
             console.error("Failed to load review pool:", error);

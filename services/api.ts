@@ -225,6 +225,9 @@ export const resubmitPlan = async (planId: number, planFile: File, notes?: strin
 export const submitToReview = async (planId: number): Promise<any> =>
   apiFetch(`/plans/${planId}/submit_to_review/`, { method: 'POST' });
 
+export const completeDocumentVerification = async (planId: number): Promise<any> =>
+  apiFetch(`/plans/${planId}/complete_document_verification/`, { method: 'POST' });
+
 export const rejectPreScreen = async (planId: number, reason: string): Promise<any> =>
   apiFetch(`/plans/${planId}/reject_pre_screen/`, {
     method: 'POST',

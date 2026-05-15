@@ -35,6 +35,7 @@ from .serializers import (
 )
 from .permissions import IsAdmin, IsStaffOrAbove, IsReceptionOrAbove, IsOwnerOrStaff
 from .services.notifications import dispatch_notification
+
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
@@ -461,6 +462,43 @@ class PlanViewSet(viewsets.ModelViewSet):
 
         return Response({'status': 'DOCUMENTS_PENDING_VERIFICATION'})
 
+    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
+    def complete_document_verification(self, request, pk=None):
+        """
+        Manually transition plan from DOCUMENTS_PENDING_VERIFICATION to FINAL_SUBMITTED.
+        Used when automatic trigger fails or manual intervention is needed.
+        Assumes the receptionist has verified all docs to their satisfaction.
+        """
+        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
+            return Response({'error': 'Only Reception or Admin can complete document verification.'}, status=403)
+        
+        plan = self.get_object()
+        if plan.status != PlanStatus.DOCUMENTS_PENDING_VERIFICATION:
+            return Response(
+                {'error': f'Plan must be in DOCUMENTS_PENDING_VERIFICATION status. Current: {plan.status}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        old_status = plan.status
+        plan.status = PlanStatus.FINAL_SUBMITTED
+        plan.save(update_fields=['status'])
+
+        # Assign plan number if not already assigned
+        plan_number = plan.assign_plan_number()
+
+        log_action(request.user, 'DOCUMENT_VERIFICATION_COMPLETED', 'Plan', plan.id,
+                   old_value={'status': old_status}, 
+                   new_value={'status': plan.status, 'plan_number': plan_number},
+                   request=request)
+
+        dispatch_notification(
+            plan.client, 'PLAN_NUMBER_ASSIGNED',
+            f'Your application has been verified. Your official plan number is {plan_number}.',
+            subject=f'Plan Number Assigned — {plan_number}'
+        )
+
+        return Response({'status': plan.status, 'plan_number': plan_number})
+
     def perform_create(self, serializer):
         pass  # Overridden by create() above
 
@@ -647,9 +685,11 @@ class PlanViewSet(viewsets.ModelViewSet):
         if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
             return Response({'error': 'Only Reception or Admin can move plans to technical review.'}, status=403)
         plan = self.get_object()
-        allowed = [PlanStatus.FINAL_SUBMITTED]
+        # Relaxed to allow direct submissions (PRE_SCREENING/SUBMITTED) or preliminary follow-ups (FINAL_SUBMITTED)
+        # Relaxed to allow direct submissions (PRE_SCREENING/SUBMITTED) or preliminary follow-ups (FINAL_SUBMITTED)
+        allowed = [PlanStatus.FINAL_SUBMITTED, PlanStatus.PRE_SCREENING, PlanStatus.SUBMITTED]
         if plan.status not in allowed:
-            return Response({'error': f'Plan must be in one of {allowed} to submit to review.'},
+            return Response({'error': f'Plan must be in one of {allowed} to submit to review. Current: {plan.status}'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         # Block if there are unresolved ERROR flags
@@ -1268,237 +1308,95 @@ class SubmittedDocumentViewSet(viewsets.ModelViewSet):
 
 
 # ─────────────────────────────────────────────
-# PROFORMA INVOICE
+# PROFORMA INVOICE SYSTEM
 # ─────────────────────────────────────────────
 
-class ProformaInvoiceViewSet(viewsets.ModelViewSet):
-    serializer_class = ProformaInvoiceSerializer
-    permission_classes = [IsAuthenticated]
-    filter_backends = [filters.SearchFilter]
-    search_fields = ['invoice_number', 'plan__plan_id']
+class ProformaInvoiceStatus(models.TextChoices):
+    ISSUED    = 'ISSUED',    'Issued'
+    PAID      = 'PAID',      'Paid'
+    CANCELLED = 'CANCELLED', 'Cancelled'
 
-    def get_queryset(self):
-        user = self.request.user
-        qs = ProformaInvoice.objects.select_related('plan', 'issued_by').prefetch_related(
-            'line_items', 'payment_receipts'
+
+class ProformaInvoice(models.Model):
+    """
+    Proforma invoice issued by the receptionist after a preliminary submission.
+    Shows itemised fees in ZWL and USD with BCC vote numbers.
+    The plan number is NOT assigned until this invoice is paid and docs are verified.
+    """
+    plan           = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name='proforma_invoices')
+    invoice_number = models.CharField(max_length=50, unique=True, editable=False)
+    issued_by      = models.ForeignKey(User, on_delete=models.PROTECT, related_name='issued_invoices')
+    issued_at      = models.DateTimeField(auto_now_add=True)
+    status         = models.CharField(max_length=20, choices=ProformaInvoiceStatus.choices,
+                                      default=ProformaInvoiceStatus.ISSUED)
+    notes          = models.TextField(blank=True)
+    reception_contacts = models.TextField(blank=True, help_text="Contacts for the client to follow up with.")
+    rates_comment      = models.TextField(blank=True, help_text="Comment to clear rates balance.")
+    total_zwl      = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total_usd      = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        if not self.invoice_number:
+            year  = timezone.now().year
+            count = ProformaInvoice.objects.filter(
+                invoice_number__startswith=f'INV-{year}-'
+            ).count()
+            self.invoice_number = f'INV-{year}-{str(count + 1).zfill(5)}'
+        super().save(*args, **kwargs)
+
+    def recalculate_totals(self):
+        """Recalculate totals from line items and save."""
+        agg = self.line_items.aggregate(
+            zwl=models.Sum('amount_zwl'),
+            usd=models.Sum('amount_usd')
         )
-        plan_id = self.request.query_params.get('plan')
-        if plan_id:
-            qs = qs.filter(plan_id=plan_id)
-        if user.role == UserRole.CLIENT:
-            return qs.filter(plan__client=user)
-        return qs
+        self.total_zwl = agg['zwl'] or 0
+        self.total_usd = agg['usd'] or 0
+        self.save(update_fields=['total_zwl', 'total_usd'])
 
-    def get_permissions(self):
-        if self.action in ['create', 'update', 'partial_update', 'destroy', 'confirm_payment']:
-            return [IsReceptionOrAbove()]
-        return [IsAuthenticated()]
-
-    def create(self, request, *args, **kwargs):
-        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
-            return Response({'error': 'Only Reception or Admin can issue proforma invoices.'}, status=403)
-        plan_id = request.data.get('plan')
-        if not plan_id:
-            return Response({'error': 'plan field is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            plan = Plan.objects.get(pk=plan_id)
-        except Plan.DoesNotExist:
-            return Response({'error': 'Plan not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        if plan.status != PlanStatus.PRELIMINARY_SUBMITTED:
-            return Response(
-                {'error': 'Proforma can only be issued for PRELIMINARY_SUBMITTED plans.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if not _preliminary_reviews_complete(plan):
-            return Response(
-                {'error': 'Housing, Estates, and Valuation must all approve the preliminary submission before issuing a proforma.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        valuation_review = plan.get_current_reviews(DepartmentReviewStage.PRELIMINARY).filter(
-            department__code='VALUATION'
-        ).first()
-        expected_amount = valuation_review.amount_payable if valuation_review else None
-
-        invoice = ProformaInvoice.objects.create(
-            plan=plan,
-            issued_by=request.user,
-            notes=request.data.get('notes', ''),
-        )
-
-        # Create line items
-        line_items_data = request.data.get('line_items', [])
-        if not line_items_data and expected_amount:
-            line_items_data = [{
-                'label': 'Preliminary valuation fee',
-                'vote_no': '',
-                'amount_zwl': expected_amount,
-                'amount_usd': 0,
-                'is_rates_payment': False,
-            }]
-
-        if expected_amount and line_items_data:
-            total_zwl = Decimal('0')
-            for item in line_items_data:
-                try:
-                    total_zwl += Decimal(str(item.get('amount_zwl', 0) or 0))
-                except (InvalidOperation, TypeError):
-                    return Response({'error': 'Each line item amount_zwl must be a valid number.'}, status=400)
-            if total_zwl != expected_amount:
-                return Response(
-                    {'error': f'Line item total must match the valuation amount of {expected_amount} ZWL.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        for item in line_items_data:
-            ProformaLineItem.objects.create(
-                invoice=invoice,
-                label=item.get('label', ''),
-                vote_no=item.get('vote_no', ''),
-                amount_zwl=item.get('amount_zwl', 0),
-                amount_usd=item.get('amount_usd', 0),
-                is_rates_payment=item.get('is_rates_payment', False),
-            )
-
-        invoice.recalculate_totals()
-
-        old = plan.status
-        plan.status = PlanStatus.PROFORMA_ISSUED
-        plan.save(update_fields=['status'])
-
-        log_action(request.user, 'PROFORMA_ISSUED', 'ProformaInvoice', invoice.id,
-                   new_value={'invoice_number': invoice.invoice_number, 'plan_id': plan.plan_id},
-                   request=request)
-
-        dispatch_notification(
-            plan.client, 'PROFORMA_ISSUED',
-            f'Proforma invoice {invoice.invoice_number} has been issued for your application {plan.plan_id}. '
-            f'Total: ZWL {invoice.total_zwl} / USD {invoice.total_usd}. Please pay and upload your receipt.',
-            subject=f'Proforma Invoice Issued — {invoice.invoice_number}'
-        )
-
-        return Response(
-            ProformaInvoiceSerializer(invoice, context={'request': request}).data,
-            status=status.HTTP_201_CREATED
-        )
-
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
-    def download(self, request, pk=None):
-        """Render a simple PDF version of the proforma invoice for client download/viewing."""
-        invoice = self.get_object()
-
-        doc = fitz.open()
-        page = doc.new_page()
-
-        lines = [
-            "Bulawayo PACS Proforma Invoice",
-            "",
-            f"Invoice Number: {invoice.invoice_number}",
-            f"Plan ID: {invoice.plan.plan_id}",
-            f"Status: {invoice.status}",
-            f"Issued At: {invoice.issued_at.strftime('%Y-%m-%d %H:%M')}",
-            "",
-            "Line Items:",
-        ]
-
-        for item in invoice.line_items.all():
-            lines.append(
-                f"- {item.label} | Vote {item.vote_no or 'N/A'} | "
-                f"ZWL {item.amount_zwl} | USD {item.amount_usd}"
-            )
-
-        lines.extend(
-            [
-                "",
-                f"Total ZWL: {invoice.total_zwl}",
-                f"Total USD: {invoice.total_usd}",
-            ]
-        )
-
-        if invoice.notes:
-            lines.extend(["", f"Notes: {invoice.notes}"])
-        if invoice.reception_contacts:
-            lines.extend(["", f"Reception Contacts: {invoice.reception_contacts}"])
-        if invoice.rates_comment:
-            lines.extend(["", f"Rates Comment: {invoice.rates_comment}"])
-
-        y = 72
-        for line in lines:
-            page.insert_text((72, y), str(line), fontsize=11, fontname="helv")
-            y += 18
-
-        pdf_bytes = doc.tobytes(garbage=4, deflate=True)
-        doc.close()
-
-        response = FileResponse(
-            BytesIO(pdf_bytes),
-            content_type='application/pdf'
-        )
-        response['Content-Disposition'] = f'inline; filename="{invoice.invoice_number}.pdf"'
-        return response
-
-    @action(detail=True, methods=['post'], permission_classes=[IsReceptionOrAbove])
-    def confirm_payment(self, request, pk=None):
-        """
-        Receptionist confirms payment by recording the receipt number.
-        receipt_number must be unique across all PaymentReceipt records.
-        """
-        if request.user.role not in [UserRole.RECEPTION, UserRole.ADMIN]:
-            return Response({'error': 'Only Reception or Admin can confirm payments.'}, status=403)
-        invoice = self.get_object()
-
-        receipt_number = request.data.get('receipt_number', '').strip()
-        if not receipt_number:
-            return Response({'error': 'receipt_number is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if PaymentReceipt.objects.filter(receipt_number=receipt_number).exists():
-            return Response({'error': f'Receipt number "{receipt_number}" has already been recorded.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        payment_date = request.data.get('payment_date')
-        if not payment_date:
-            return Response({'error': 'payment_date is required (YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
-
-        receipt = PaymentReceipt.objects.create(
-            invoice=invoice,
-            receipt_number=receipt_number,
-            amount_zwl=request.data.get('amount_zwl', invoice.total_zwl),
-            amount_usd=request.data.get('amount_usd', invoice.total_usd),
-            paid_by=invoice.plan.client,
-            payment_date=payment_date,
-            payment_method=request.data.get('payment_method', ''),
-            evidence_file=request.FILES.get('evidence_file'),
-            recorded_by=request.user,
-        )
-
-        invoice.status = ProformaInvoiceStatus.PAID
-        invoice.save(update_fields=['status'])
-
-        plan = invoice.plan
-        old = plan.status
-        plan.status = PlanStatus.PAID
-        plan.save(update_fields=['status'])
-
-        log_action(request.user, 'PAYMENT_CONFIRMED', 'PaymentReceipt', receipt.id,
-                   new_value={'receipt_number': receipt_number, 'plan_id': plan.plan_id},
-                   request=request)
-
-        dispatch_notification(
-            plan.client, 'PAYMENT_CONFIRMED',
-            f'Payment for {plan.plan_id} (Receipt #{receipt_number}) has been confirmed. '
-            f'Your documents will now be verified.',
-            subject=f'Payment Confirmed for {plan.plan_id}'
-        )
-
-        return Response(PaymentReceiptSerializer(receipt, context={'request': request}).data)
+    def __str__(self):
+        return self.invoice_number
 
 
-# ─────────────────────────────────────────────
+class ProformaLineItem(models.Model):
+    """
+    A single fee line on the proforma.
+    Labels and vote numbers mirror the BCC Building Inspectorate proforma template.
+    """
+    invoice          = models.ForeignKey(ProformaInvoice, on_delete=models.CASCADE, related_name='line_items')
+    label            = models.CharField(max_length=200)
+    vote_no          = models.CharField(max_length=50, blank=True,
+                                        help_text="BCC vote number e.g. 0074/50363")
+    amount_zwl       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    amount_usd       = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    is_rates_payment = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f'{self.label} ({self.invoice.invoice_number})'
+
+
+class PaymentReceipt(models.Model):
+    """Payment evidence submitted by the applicant / recorded by the receptionist."""
+    invoice        = models.ForeignKey(ProformaInvoice, on_delete=models.CASCADE,
+                                       related_name='payment_receipts')
+    amount_zwl     = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    amount_usd     = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    receipt_number = models.CharField(max_length=100, unique=True)
+    paid_by        = models.ForeignKey(User, on_delete=models.PROTECT, related_name='payments')
+    payment_date   = models.DateField()
+    payment_method = models.CharField(max_length=50, blank=True)
+    evidence_file  = models.FileField(upload_to='payment_evidence/%Y/%m/', null=True, blank=True)
+    recorded_by    = models.ForeignKey(User, on_delete=models.PROTECT,
+                                       related_name='recorded_payments')
+    recorded_at    = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Receipt #{self.receipt_number}'
+
+
+# ==========================================================
 # FINAL DECISION
-# ─────────────────────────────────────────────
+# ==========================================================
 
 class FinalDecisionViewSet(viewsets.ModelViewSet):
     serializer_class = FinalDecisionSerializer

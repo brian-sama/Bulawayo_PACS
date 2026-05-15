@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Plan, UserProfile } from '../types';
 import * as api from '../services/api';
@@ -8,11 +7,12 @@ import { usePolling } from '../hooks/usePolling';
 
 interface ReceptionGatewayProps {
     user: UserProfile;
+    selectedPlanId?: number;
+    onBack?: () => void;
 }
 
 type QueueTab = 'pre_screen' | 'proforma' | 'doc_verify';
 
-// Static compliance checklist
 const COMPLIANCE_CHECKS = [
     { id: 'rates', label: 'Property Rates & Water Account (Good Standing)', active: true },
     { id: 'lease', label: 'Lease Arrears (Current or N/A)', active: true },
@@ -20,7 +20,7 @@ const COMPLIANCE_CHECKS = [
     { id: 'penalties', label: 'Regularisation Penalties (If applicable)', active: true },
 ];
 
-export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
+export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user, selectedPlanId, onBack }) => {
     const [plans,          setPlans]          = useState<Plan[]>([]);
     const [proformaPlans,  setProformaPlans]  = useState<Plan[]>([]);
     const [docVerifyPlans, setDocVerifyPlans] = useState<Plan[]>([]);
@@ -63,6 +63,27 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
     };
 
     usePolling(loadPlans, 10000);
+
+    // Initial selection from prop
+    useEffect(() => {
+        if (selectedPlanId && plans.length > 0) {
+            const plan = plans.find(p => p.id === selectedPlanId) || 
+                         proformaPlans.find(p => p.id === selectedPlanId) || 
+                         docVerifyPlans.find(p => p.id === selectedPlanId);
+            
+            if (plan) {
+                setSelectedPlan(plan);
+                // Switch to the correct tab based on status
+                if (['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED'].includes(plan.status)) {
+                    setQueueTab('pre_screen');
+                } else if (plan.status === 'PROFORMA_ISSUED') {
+                    setQueueTab('proforma');
+                } else {
+                    setQueueTab('doc_verify');
+                }
+            }
+        }
+    }, [selectedPlanId, plans, proformaPlans, docVerifyPlans]);
 
     useEffect(() => {
         const loadPlanDetail = async () => {
@@ -183,6 +204,22 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
             alert(`Unable to verify document: ${error.message}`);
         } finally {
             setDocumentActionBusy(null);
+        }
+    };
+
+    const handleApproveDocs = async () => {
+        if (!selectedPlan) return;
+        setLoading(true);
+        try {
+            await api.completeDocumentVerification(selectedPlan.id);
+            alert(`Document verification completed for ${selectedPlan.plan_id}. Plan is now in FINAL_SUBMITTED status.`);
+            loadPlans();
+            setSelectedPlan(null);
+        } catch (error: any) {
+            console.error('Action failed:', error);
+            alert(`Operation Failed: ${error.message || 'Check console'}`);
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -574,11 +611,12 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user }) => {
                                             </button>
                                         ) : selectedPlan.status === 'DOCUMENTS_PENDING_VERIFICATION' ? (
                                             <button
+                                                onClick={handleApproveDocs}
                                                 disabled={submittedDocuments.length === 0 || submittedDocuments.some((doc: any) => !doc.is_verified)}
                                                 className={`flex-1 sm:flex-none px-10 py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl transition-all flex items-center justify-center gap-3 active:scale-95
-                                                    ${submittedDocuments.length > 0 && submittedDocuments.every((doc: any) => doc.is_verified) ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'}`}
+                                                    ${submittedDocuments.length > 0 && submittedDocuments.every((doc: any) => doc.is_verified) ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'}`}
                                             >
-                                                <span>Approve Submitted Documents Above</span>
+                                                <span>{loading ? 'Approving...' : 'Approve Submitted Documents'}</span>
                                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
                                             </button>
                                         ) : selectedPlan.status === 'FINAL_SUBMITTED' ? (
