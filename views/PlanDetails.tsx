@@ -1,9 +1,62 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plan, PlanStatus, UserProfile } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import DocumentReviewTable from '../components/documents/DocumentReviewTable';
+import { PdfViewer } from '../components/PdfViewer';
 import * as api from '../services/api';
+
+// ─── Audit Timeline ────────────────────────────────────────────────────────
+
+const AuditTimeline: React.FC<{ planPk: number }> = ({ planPk }) => {
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getPlanAuditLogs(planPk)
+      .then(data => {
+        setLogs(Array.isArray(data) ? data : (data.results || []));
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [planPk]);
+
+  if (loading) return (
+    <div className="space-y-3 mt-6">
+      {[1, 2, 3].map(i => (
+        <div key={i} className="h-12 bg-white/5 rounded-xl animate-pulse" />
+      ))}
+    </div>
+  );
+
+  if (logs.length === 0) return (
+    <p className="text-gray-500 text-sm italic mt-4">No audit trail yet.</p>
+  );
+
+  return (
+    <div className="mt-4 space-y-1">
+      {logs.map((log, i) => (
+        <div
+          key={log.id || i}
+          className="flex gap-3 items-start p-3 rounded-xl hover:bg-white/5 transition-colors"
+        >
+          <div className="w-2 h-2 rounded-full bg-blue-500 mt-2 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-white">
+              {log.action?.replace(/_/g, ' ')}
+            </p>
+            <p className="text-xs text-gray-400">
+              {log.user_display || 'System'} &middot; {new Date(log.timestamp).toLocaleString()}
+            </p>
+            {log.new_value && (
+              <p className="text-xs text-gray-500 mt-0.5 truncate">&#8594; {log.new_value}</p>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 interface PlanDetailsProps {
     plan: Plan;
@@ -17,6 +70,7 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, user, onBack, on
 
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [resubmitting, setResubmitting] = useState(false);
+    const [showPreview, setShowPreview] = useState(false);
 
     const handleSubmitResubmission = async () => {
         if (!selectedFile) return;
@@ -194,8 +248,38 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, user, onBack, on
                     )}
                 </div>
 
+                {/* PDF Drawing Preview */}
+                <div className="lg:col-span-2">
+                    <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+                        <button
+                            type="button"
+                            onClick={() => setShowPreview(prev => !prev)}
+                            className="w-full flex items-center justify-between px-4 py-3 bg-[#003366]/10 hover:bg-[#003366]/20 rounded-xl transition-colors text-[#003366] font-bold text-sm"
+                        >
+                            <span className="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-500" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                                </svg>
+                                {showPreview ? 'Hide Drawing Preview' : 'Preview Drawing'}
+                            </span>
+                            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 transition-transform duration-200 ${showPreview ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                        </button>
+                        {showPreview && (
+                            <div className="mt-4">
+                                <PdfViewer
+                                    url={api.getPlanFileUrl(plan.id)}
+                                    title="Plan Drawing"
+                                    className="min-h-[600px]"
+                                />
+                            </div>
+                        )}
+                    </div>
+                </div>
+
                 <div className="lg:col-span-3">
-                    <DocumentReviewTable 
+                    <DocumentReviewTable
                         planId={plan.plan_id}
                         planPk={plan.id}
                         documents={plan.submitted_documents || []}
@@ -203,6 +287,19 @@ export const PlanDetails: React.FC<PlanDetailsProps> = ({ plan, user, onBack, on
                         user={user || { role: 'CLIENT' } as UserProfile}
                         onRefresh={onRefresh}
                     />
+                </div>
+
+                {/* Audit Trail */}
+                <div className="lg:col-span-3">
+                    <div className="mt-2 bg-slate-900/50 border border-white/10 rounded-2xl p-6 backdrop-blur-md">
+                        <h3 className="text-lg font-bold flex items-center gap-2 mb-2 text-white">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                            </svg>
+                            Audit Trail
+                        </h3>
+                        <AuditTimeline planPk={plan.id} />
+                    </div>
                 </div>
 
                 {/* Info Sidebar */}

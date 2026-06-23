@@ -1,25 +1,47 @@
 """
 Notification dispatch service for Bulawayo PACS.
 
-Currently creates IN_APP notifications.
-Email and SMS are stubbed — integrate with a mail/SMS provider later.
+Creates IN_APP notifications, sends real emails, stubs SMS, and broadcasts
+to connected WebSocket clients via Django Channels.
 """
 
 from django.utils import timezone
-
-
 from django.core.mail import send_mail
 from django.conf import settings
 
 
+def broadcast_notification(user_id, payload: dict):
+    """
+    Push *payload* to any WebSocket clients connected to the given user's
+    notification group (``notifications_<user_id>``).
+
+    This is a no-op when channel layers are not configured (e.g. in tests
+    without Redis / InMemoryChannelLayer).
+    """
+    try:
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+
+        async_to_sync(channel_layer.group_send)(
+            f'notifications_{user_id}',
+            {'type': 'notification.message', 'payload': payload},
+        )
+    except Exception as exc:  # pragma: no cover
+        print(f"[WebSocket broadcast] Failed for user {user_id}: {exc}")
+
+
 def dispatch_notification(user, notification_type: str, message: str, subject: str = ''):
     """
-    Create an in-app notification and dispatch to external channels (Email/SMS).
+    Create an in-app notification and dispatch to external channels (Email/SMS/WebSocket).
     """
     from plans.models import Notification, NotificationChannel
 
     # 1. In-app notification
-    Notification.objects.create(
+    notification = Notification.objects.create(
         recipient=user,
         type=notification_type,
         channel=NotificationChannel.IN_APP,
@@ -32,6 +54,14 @@ def dispatch_notification(user, notification_type: str, message: str, subject: s
 
     # 3. SMS stub (SMS gateways usually require paid API keys, keeping as log for now)
     _send_sms_stub(user, message)
+
+    # 4. WebSocket push to connected browser tabs
+    broadcast_notification(user.id, {
+        'id': notification.id,
+        'type': notification_type,
+        'subject': subject,
+        'message': message,
+    })
 
 
 def _send_real_email(user, subject: str, body: str):

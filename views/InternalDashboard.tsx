@@ -11,7 +11,7 @@ interface InternalDashboardProps {
     onNavigate: (view: any) => void;
 }
 
-const KPICard: React.FC<{ title: string; value: string | number; subValue: string; icon: string; color: string }> = ({ title, value, subValue, icon, color }) => (
+const KPICard: React.FC<{ title: string; value: string | number; subValue: string; icon: React.ReactNode; color: string }> = ({ title, value, subValue, icon, color }) => (
     <div className="bg-white p-5 rounded-[1.5rem] border border-slate-100 shadow-sm hover:shadow-md transition-all duration-500 group">
         <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 text-xl group-hover:scale-110 transition-transform ${color}`}>
             {icon}
@@ -52,14 +52,19 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
 
     // Logic to filter plans relevant to the staff member's department
     const isReceptionist = user.role === 'RECEPTION';
+    const isFinalApprover = user.role === 'FINAL_APPROVER';
 
     const urgentPlans = plans.filter(p => {
         if (isReceptionist) {
             return ['SUBMITTED', 'PRE_SCREENING', 'PRELIMINARY_SUBMITTED', 'PROFORMA_ISSUED', 'PAID', 'DOCUMENTS_PENDING_VERIFICATION'].includes(p.status);
         }
-        
-        const isPrelimDept = isPreliminaryGatekeeper(user.department_name);
-        
+
+        if (isFinalApprover) {
+            return p.status === 'AWAITING_FINAL_DECISION';
+        }
+
+        const isPrelimDept = isPreliminaryGatekeeper(user.department_name, user.role);
+
         if (isPrelimDept && p.status === 'PRELIMINARY_SUBMITTED') {
             return true;
         }
@@ -80,18 +85,33 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
     const recentPlans = [...plans].slice(0, 5); // Already sorted
     const displayPlans = activeTab === 'PRIORITY' ? urgentPlans : recentPlans;
 
+    const noDepartmentWarning = (user.role === 'DEPT_OFFICER' || user.role === 'DEPT_HEAD') && !user.department;
+
     if (loading) {
         return <div className="p-12 text-center text-slate-400 font-bold uppercase tracking-widest">Loading Dashboard...</div>;
     }
 
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+            {/* No-department warning */}
+            {noDepartmentWarning && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+                    <span className="text-amber-500 text-xl">⚠</span>
+                    <div>
+                        <p className="text-sm font-black text-amber-800">No Department Assigned</p>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                            Your account is not linked to any department. Contact an Administrator to assign you to the correct department before you can process plans.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             {/* 🚀 Strategic KPIs */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <KPICard
-                    title={isReceptionist ? "Pending Pre-Screen" : "Personal Queue"}
+                    title={isReceptionist ? "Pending Pre-Screen" : isFinalApprover ? "Awaiting Seal" : "Personal Queue"}
                     value={isReceptionist ? pendingPreScreen : urgentPlans.length}
-                    subValue={isReceptionist ? "NEW SUBMISSIONS" : `${urgentPlans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length} NEW`}
+                    subValue={isReceptionist ? "NEW SUBMISSIONS" : isFinalApprover ? "READY TO SIGN" : `${urgentPlans.filter(p => p.lastUpdate && p.lastUpdate.startsWith(today)).length} NEW`}
                     icon={
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -150,12 +170,14 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                         </div>
                         <div className="flex bg-slate-100 p-1.5 rounded-2xl gap-1">
                             <button
+                                type="button"
                                 onClick={() => setActiveTab('PRIORITY')}
                                 className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'PRIORITY' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
                                 {isReceptionist ? 'Action Queue' : user.role === 'DEPT_HEAD' ? 'Approval Queue' : workflowProfile.queueTitle}
                             </button>
                             <button
+                                type="button"
                                 onClick={() => setActiveTab('RECENT')}
                                 className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'RECENT' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
@@ -196,7 +218,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                     </div>
                                 </div>
                                 <div className="text-right flex flex-col items-end gap-1">
-                                    <button className="bg-[#003366] text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-blue-700 transition-colors">Open Review</button>
+                                    <button type="button" className="bg-[#003366] text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-blue-700 transition-colors">Open Review</button>
                                     <span className="text-[8px] font-bold text-slate-300 uppercase tracking-tighter">Due in 2 Days</span>
                                 </div>
                             </div>
@@ -230,6 +252,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                 </div>
                             </div>
                             <button
+                                type="button"
                                 onClick={() => {
                                     if (user.role === 'RECEPTION') onNavigate('RECEPTION');
                                     else if (user.role === 'FINAL_APPROVER') onNavigate('FINAL_APPROVAL');
@@ -263,7 +286,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({ user, onVi
                                         <p className="text-[10px] font-black text-slate-800 truncate uppercase">{p.plan_id}</p>
                                         <p className="text-[8px] font-bold text-red-600 uppercase tracking-tighter">SLA Breach in {Math.ceil((new Date(p.date_submitted!).getTime() + 21 * 24 * 60 * 60 * 1000 - new Date().getTime()) / (1000 * 60 * 60 * 24))} Days</p>
                                     </div>
-                                    <button onClick={() => onViewPlan(p)} className="text-[9px] font-black text-slate-400 hover:text-red-600">VIEW</button>
+                                    <button type="button" onClick={() => onViewPlan(p)} className="text-[9px] font-black text-slate-400 hover:text-red-600">VIEW</button>
                                 </div>
                             ))}
                             {plans.filter(p => {

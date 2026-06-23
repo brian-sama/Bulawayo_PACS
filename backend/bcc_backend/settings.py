@@ -27,10 +27,7 @@ def env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
-SECRET_KEY = config(
-    "SECRET_KEY",
-    default="change-me-in-production-please-replace-with-a-long-random-secret",
-)
+SECRET_KEY = config("SECRET_KEY")
 DEBUG = env_bool("DEBUG", default=False)
 
 ALLOWED_HOSTS = csv_config("ALLOWED_HOSTS", "localhost,127.0.0.1")
@@ -40,6 +37,7 @@ CSRF_TRUSTED_ORIGINS = csv_config(
 )
 
 INSTALLED_APPS = [
+    "daphne",  # must be before django.contrib.staticfiles for ASGI
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -49,6 +47,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
+    "channels",
+    "drf_spectacular",
     "plans",
 ]
 
@@ -81,6 +81,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "bcc_backend.wsgi.application"
+ASGI_APPLICATION = "bcc_backend.asgi.application"
 
 DATABASES = {
     "default": dj_database_url.config(
@@ -99,11 +100,23 @@ AUTHENTICATION_BACKENDS = [
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
+        "plans.auth.JWTCookieAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "20/minute",
+        "user": "300/minute",
+        "login": "10/minute",
+        "approve_final": "5/minute",
+    },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
 }
@@ -120,6 +133,7 @@ CORS_ALLOWED_ORIGINS = csv_config(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
 )
+CORS_ALLOW_CREDENTIALS = True
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -136,3 +150,32 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ─────────────────────────────────────────────
+# Django Channels
+# ─────────────────────────────────────────────
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
+
+# ─────────────────────────────────────────────
+# Celery
+# ─────────────────────────────────────────────
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+CELERY_TASK_ALWAYS_EAGER = env_bool('CELERY_TASK_ALWAYS_EAGER', default=DEBUG)
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@bulawayo.city.zw')
+
+# ─────────────────────────────────────────────
+# drf-spectacular OpenAPI
+# ─────────────────────────────────────────────
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Bulawayo PACS API',
+    'DESCRIPTION': 'Plan Approval and Control System — Bulawayo City Council',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+}

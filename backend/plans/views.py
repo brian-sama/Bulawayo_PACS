@@ -592,12 +592,15 @@ class PlanViewSet(viewsets.ModelViewSet):
             return qs.filter(client=user)
 
         if user.role == UserRole.RECEPTION:
-            # Reception only sees plans up to the handoff into technical review.
+            # Reception only sees plans in the intake/payment/document-verification pipeline.
             return qs.exclude(status__in=[
                 PlanStatus.REVIEW_POOL,
                 PlanStatus.IN_REVIEW,
+                PlanStatus.UNDER_REVIEW,
+                PlanStatus.CORRECTIONS_REQUIRED,
                 PlanStatus.AWAITING_FINAL_DECISION,
                 PlanStatus.APPROVED,
+                PlanStatus.REJECTED,
             ])
 
         if user.role == UserRole.DEPT_OFFICER:
@@ -1044,7 +1047,7 @@ class PlanViewSet(viewsets.ModelViewSet):
 
     # ── Secure file download ──────────────────────────────────────────────
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download')
     def download_file(self, request, pk=None):
         """Authenticated, secure download of the current plan version file."""
         plan = self.get_object()
@@ -1054,27 +1057,27 @@ class PlanViewSet(viewsets.ModelViewSet):
         filename = f'{plan.plan_id}_v{current_version.version_number}.pdf'
         return _stream_field_file(current_version, 'file', filename)
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-title-deed')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download-title-deed')
     def download_title_deed(self, request, pk=None):
         plan = self.get_object()
         return _stream_field_file(plan, 'title_deed', f'{plan.plan_id}_title_deed.pdf')
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-power-of-attorney')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download-power-of-attorney')
     def download_power_of_attorney(self, request, pk=None):
         plan = self.get_object()
         return _stream_field_file(plan, 'power_of_attorney', f'{plan.plan_id}_power_of_attorney.pdf')
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-structural-cert')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download-structural-cert')
     def download_structural_cert(self, request, pk=None):
         plan = self.get_object()
         return _stream_field_file(plan, 'structural_cert', f'{plan.plan_id}_structural_cert.pdf')
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-receipt-scan')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download-receipt-scan')
     def download_receipt_scan(self, request, pk=None):
         plan = self.get_object()
         return _stream_field_file(plan, 'receipt_scan', f'{plan.plan_id}_receipt_scan.pdf')
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated], url_path='download-sealed-document')
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff], url_path='download-sealed-document')
     def download_sealed_document(self, request, pk=None):
         plan = self.get_object()
         approval = getattr(plan, 'approval', None)
@@ -1134,6 +1137,14 @@ class PlanViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[IsStaffOrAbove])
     def approve_final(self, request, pk=None):
         """Apply final approval and lock the plan (PDF stamp + QR code)."""
+        from .throttles import ApproveFinalRateThrottle
+        for throttle in [ApproveFinalRateThrottle()]:
+            if not throttle.allow_request(request, self):
+                return Response(
+                    {'error': 'Too many approval attempts. Please wait before trying again.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+
         plan = self.get_object()
 
         if request.user.role not in [UserRole.FINAL_APPROVER, UserRole.ADMIN]:
@@ -1143,6 +1154,11 @@ class PlanViewSet(viewsets.ModelViewSet):
         if plan.status != PlanStatus.AWAITING_FINAL_DECISION:
             return Response({'error': 'Plan must be in AWAITING_FINAL_DECISION status.'},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        # Guard against double-approval (e.g. double-click)
+        if Approval.objects.filter(plan=plan).exists():
+            return Response({'error': 'This plan has already been approved.'},
+                            status=status.HTTP_409_CONFLICT)
 
         current_version = plan.get_current_version()
         if not current_version:
@@ -1227,19 +1243,21 @@ class PlanViewSet(viewsets.ModelViewSet):
             subject=f'Final Approval Granted — {plan.plan_id}'
         )
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+        return Response({'detail': 'Plan approved and sealed successfully.', 'signature_hash': sig_hash})
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff])
     def download_intake_slip(self, request, pk=None):
         """Generates and downloads the intake slip."""
         plan = self.get_object()
         from .services.doc_service import DocumentGenerator
         pdf_content = DocumentGenerator.generate_intake_slip(plan)
-        
+
         from django.http import HttpResponse
         response = HttpResponse(pdf_content, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="intake_slip_{plan.plan_id}.pdf"'
         return response
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsOwnerOrStaff])
     def download_approval_certificate(self, request, pk=None):
         """Generates and downloads the final approval certificate."""
         plan = self.get_object()
@@ -1391,13 +1409,24 @@ class DepartmentReviewViewSet(viewsets.ModelViewSet):
             if user.role not in [UserRole.DEPT_HEAD, UserRole.ADMIN]:
                 return Response({'error': 'Only Department Head can perform this action.'}, status=403)
 
+            # Officer must have acted before Head can confirm
+            if review.officer_status == DepartmentReviewStatus.PENDING:
+                return Response(
+                    {'error': 'The reviewing officer must submit their assessment before the Head can act.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             status_map = {
                 'APPROVED': DepartmentReviewStatus.HEAD_CONFIRMED,
                 'HEAD_CONFIRMED': DepartmentReviewStatus.HEAD_CONFIRMED,
                 'REJECTED': DepartmentReviewStatus.HEAD_REJECTED,
+                'CORRECTIONS_REQUIRED': DepartmentReviewStatus.HEAD_REJECTED,
             }
             if decision not in status_map:
-                return Response({'error': 'Invalid status. Head can only APPROVED or REJECTED.'}, status=400)
+                return Response(
+                    {'error': 'Invalid status. Head options: APPROVED, CORRECTIONS_REQUIRED, REJECTED.'},
+                    status=400
+                )
 
             review.head         = user
             review.head_status  = status_map[decision]
@@ -1570,6 +1599,13 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsStaffOrAbove]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['action', 'target_model', 'user__full_name']
+
+    def get_queryset(self):
+        qs = AuditLog.objects.select_related('user').order_by('-timestamp')
+        plan_id = self.request.query_params.get('plan_id')
+        if plan_id:
+            qs = qs.filter(target_id=plan_id, target_model__in=['Plan', 'PlanVersion'])
+        return qs
 
 
 # ─────────────────────────────────────────────

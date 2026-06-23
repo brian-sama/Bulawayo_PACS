@@ -39,7 +39,7 @@ const SearchArchive: React.FC<SearchArchiveProps> = ({ user, onViewPlan }) => {
             plan.plan_id.toLowerCase().includes(term) ||
             plan.stand_addr.toLowerCase().includes(term) ||
             (plan.client_name && plan.client_name.toLowerCase().includes(term)) ||
-            (plan.architect && plan.architect.name && plan.architect.name.toLowerCase().includes(term))
+            (plan.architect != null && typeof plan.architect === 'object' && (plan.architect as any).name && (plan.architect as any).name.toLowerCase().includes(term))
         );
         setResults(filtered);
     };

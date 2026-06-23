@@ -314,15 +314,15 @@ export const SubmissionWizard: React.FC<SubmissionWizardProps> = ({ onCancel, on
 
             const plan = await api.apiFetch('/plans/', { method: 'POST', body: initPayload });
 
-            // Step 2: submit as preliminary (attaches plan file + transitions status)
+            // Step 2: submit as preliminary (attaches plan file + transitions status to PRELIMINARY_SUBMITTED)
             const prelimPayload = new FormData();
             prelimPayload.append('plan_file', formData.preliminary.planFile);
-            await api.apiFetch(`/plans/${plan.id}/submit_preliminary/`, {
+            const submittedPlan = await api.apiFetch(`/plans/${plan.id}/submit_preliminary/`, {
                 method: 'POST',
                 body: prelimPayload
             });
 
-            onSuccess(plan);
+            onSuccess(submittedPlan ?? plan);
         } catch (e) {
             console.error(e);
             alert('Error submitting preliminary application. Please try again.');

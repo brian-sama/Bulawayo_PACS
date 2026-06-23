@@ -9,8 +9,8 @@ export interface UserProfile {
   username: string;
   email: string;
   full_name: string;
-  role: string;
-  user_type: string;
+  role: 'CLIENT' | 'RECEPTION' | 'DEPT_OFFICER' | 'DEPT_HEAD' | 'FINAL_APPROVER' | 'ADMIN';
+  user_type: 'OWNER' | 'PROFESSIONAL';
   department: number | null;
   department_name: string | null;
   is_active: boolean;
@@ -189,6 +189,13 @@ export const getDepartments = async (): Promise<any[]> => {
 export const getAuditLogs = async (): Promise<any[]> => {
   const data = await apiFetch('/audit-logs/');
   return Array.isArray(data) ? data : data.results ?? [];
+};
+
+/**
+ * Fetch audit log entries for a specific plan by its primary key.
+ */
+export const getPlanAuditLogs = async (planPk: number): Promise<any> => {
+  return apiFetch(`/audit-logs/?plan_id=${planPk}`);
 };
 
 // ─────────────────────────────────────────────

@@ -267,8 +267,10 @@ export const WORKFLOW_PROFILES: Record<WorkflowKind, WorkflowProfile> = {
 export const getWorkflowProfile = (departmentName?: string | null): WorkflowProfile =>
     WORKFLOW_PROFILES[getWorkflowKind(departmentName)];
 
-export const isPreliminaryGatekeeper = (departmentName?: string | null) =>
-    ['OWNERSHIP', 'LEASE', 'EVALUATION', 'FINANCIAL'].includes(getWorkflowKind(departmentName));
+export const isPreliminaryGatekeeper = (departmentName?: string | null, role?: string | null) => {
+    if (role && role !== 'DEPT_OFFICER' && role !== 'DEPT_HEAD') return false;
+    return ['OWNERSHIP', 'LEASE', 'EVALUATION', 'FINANCIAL'].includes(getWorkflowKind(departmentName));
+};
 
 export const isEvaluationDepartment = (departmentName?: string | null) =>
     getWorkflowKind(departmentName) === 'EVALUATION';

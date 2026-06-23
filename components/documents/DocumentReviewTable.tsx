@@ -158,7 +158,7 @@ const DocumentReviewTable: React.FC<DocumentReviewTableProps> = ({
                           >
                             <Download size={18} />
                           </a>
-                          {user.role === 'RECEPTION' && latest.status === 'PENDING' && (
+                          {(user.role === 'RECEPTION' || user.role === 'ADMIN') && latest.status === 'PENDING' && (
                             <>
                               <button 
                                 onClick={() => handleVerify(latest.id)}

@@ -12,6 +12,7 @@ export const LoginView: React.FC<LoginViewProps> = (props) => {
     const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [registerSuccess, setRegisterSuccess] = useState(false);
 
     // Form States
     const [loginData, setLoginData] = useState({ username: '', password: '' });
@@ -48,7 +49,7 @@ export const LoginView: React.FC<LoginViewProps> = (props) => {
                 method: 'POST',
                 body: JSON.stringify(regData)
             });
-            alert("Account created! Please sign in.");
+            setRegisterSuccess(true);
             setMode('LOGIN');
             setLoginData({ username: regData.email, password: regData.password });
         } catch (err: any) {
@@ -79,6 +80,12 @@ export const LoginView: React.FC<LoginViewProps> = (props) => {
                         <p className="text-slate-400 text-sm">{mode === 'LOGIN' ? 'Sign in to manage your plans' : 'Register to start your plan submission'}</p>
                     </div>
 
+                    {registerSuccess && (
+                        <div className="bg-emerald-50 text-emerald-700 p-4 rounded-xl text-xs font-bold border border-emerald-100">
+                            Account created! Your credentials have been pre-filled — sign in to continue.
+                        </div>
+                    )}
+
                     {error && (
                         <div className="bg-red-50 text-red-600 p-4 rounded-xl text-xs font-bold border border-red-100 italic animate-pulse">
                             {error}
@@ -103,7 +110,11 @@ export const LoginView: React.FC<LoginViewProps> = (props) => {
                                 onChange={e => setLoginData({ ...loginData, password: e.target.value })}
                                 required
                             />
-                            <button className="w-full p-4 bg-[#003366] text-white font-bold rounded-xl shadow-lg hover:translate-y-[-1px] transition duration-200">
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="w-full p-4 bg-[#003366] text-white font-bold rounded-xl shadow-lg hover:translate-y-[-1px] transition duration-200 disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0"
+                            >
                                 {loading ? 'Checking...' : 'Sign In'}
                             </button>
                         </form>
@@ -174,7 +185,11 @@ export const LoginView: React.FC<LoginViewProps> = (props) => {
                                 onChange={e => setRegData({ ...regData, password: e.target.value })}
                                 required
                             />
-                            <button className="w-full p-4 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition">
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="w-full p-4 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
                                 {loading ? 'Registering...' : 'Create My Account'}
                             </button>
                         </form>

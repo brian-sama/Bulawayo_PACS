@@ -51,6 +51,7 @@ export const WorkflowConfig: React.FC = () => {
 
     // Track which category currently has the "Add Department" dropdown open
     const [openAddDropdown, setOpenAddDropdown] = useState<string | null>(null);
+    const [confirmRemove, setConfirmRemove] = useState<{ id: number; category: string; deptName: string } | null>(null);
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
@@ -104,7 +105,10 @@ export const WorkflowConfig: React.FC = () => {
         }
     };
 
-    const handleRemoveMapping = async (mappingId: number, category: string, deptName: string) => {
+    const handleRemoveMapping = async () => {
+        if (!confirmRemove) return;
+        const { id: mappingId, category, deptName } = confirmRemove;
+        setConfirmRemove(null);
         const key = `remove-${mappingId}`;
         setActionLoading(key);
         try {
@@ -186,7 +190,8 @@ export const WorkflowConfig: React.FC = () => {
                                                 <span className="text-[11px] font-black text-slate-700 tracking-tight">{mapping.department_name}</span>
                                             </div>
                                             <button
-                                                onClick={() => handleRemoveMapping(mapping.id, categoryKey, mapping.department_name)}
+                                                type="button"
+                                                onClick={() => setConfirmRemove({ id: mapping.id, category: categoryKey, deptName: mapping.department_name })}
                                                 disabled={actionLoading !== null}
                                                 className="px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all"
                                             >
@@ -212,6 +217,8 @@ export const WorkflowConfig: React.FC = () => {
                                             <select
                                                 onChange={(e) => handleAddMapping(categoryKey, Number(e.target.value))}
                                                 defaultValue=""
+                                                title={`Select department for ${categoryKey}`}
+                                                aria-label={`Select department to map to ${categoryKey}`}
                                                 className="flex-1 bg-slate-50 border border-slate-200 text-slate-800 text-[10px] font-black uppercase tracking-widest p-3 rounded-xl focus:outline-none focus:border-[#003366] focus:ring-1 focus:ring-[#003366]"
                                             >
                                                 <option value="" disabled>-- Select Division --</option>
@@ -222,6 +229,7 @@ export const WorkflowConfig: React.FC = () => {
                                                 ))}
                                             </select>
                                             <button
+                                                type="button"
                                                 onClick={() => setOpenAddDropdown(null)}
                                                 className="px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
                                             >
@@ -231,6 +239,7 @@ export const WorkflowConfig: React.FC = () => {
                                     </div>
                                 ) : (
                                     <button
+                                        type="button"
                                         onClick={() => setOpenAddDropdown(categoryKey)}
                                         disabled={actionLoading !== null}
                                         className="w-full py-4.5 bg-[#003366] text-white hover:bg-blue-700 disabled:bg-slate-300 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all flex items-center justify-center gap-2"
@@ -244,6 +253,37 @@ export const WorkflowConfig: React.FC = () => {
                     );
                 })}
             </div>
+
+            {/* Remove confirmation modal */}
+            {confirmRemove && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-6">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 space-y-6">
+                        <div>
+                            <h3 className="text-lg font-black text-slate-800">Remove Mapping?</h3>
+                            <p className="text-sm text-slate-500 mt-2">
+                                This will stop routing <strong>{confirmRemove.category}</strong> plans to{' '}
+                                <strong>{confirmRemove.deptName}</strong>. All plans currently in review are unaffected.
+                            </p>
+                        </div>
+                        <div className="flex gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setConfirmRemove(null)}
+                                className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-sm font-black text-slate-500 hover:border-slate-300 transition-all"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleRemoveMapping}
+                                className="flex-1 py-3 rounded-xl bg-rose-600 text-white text-sm font-black hover:bg-rose-700 transition-all"
+                            >
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

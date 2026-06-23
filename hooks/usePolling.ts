@@ -1,31 +1,37 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * usePolling hook to execute an action repeatedly at a fixed interval.
- * @param callback The async function to call
- * @param intervalMs The interval in milliseconds (default: 10000ms)
- * @param dependencies Optional dependencies that trigger a reset
+ * Polls `callback` immediately and then every `intervalMs` milliseconds.
+ *
+ * The callback ref is kept current so callers never need to include it in
+ * the dependency list.  Pass `deps` only for values that should restart the
+ * interval (e.g. a filter parameter), not for the callback itself.
  */
 export const usePolling = (
     callback: () => Promise<void> | void,
     intervalMs: number = 10000,
-    dependencies: any[] = []
+    deps: readonly any[] = []
 ) => {
     const savedCallback = useRef(callback);
 
     useEffect(() => {
         savedCallback.current = callback;
-    }, [callback]);
+    });
 
     useEffect(() => {
+        let active = true;
+
         const tick = () => {
-            savedCallback.current();
+            if (active) savedCallback.current();
         };
 
-        // Initial call
         tick();
-
         const id = setInterval(tick, intervalMs);
-        return () => clearInterval(id);
-    }, [intervalMs, ...dependencies]);
+
+        return () => {
+            active = false;
+            clearInterval(id);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [intervalMs, ...deps]);
 };

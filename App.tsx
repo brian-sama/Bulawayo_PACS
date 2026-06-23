@@ -21,11 +21,42 @@ import { LandingPage } from './views/LandingPage';
 import { ReviewInterface } from './views/ReviewInterface';
 import { WorkflowConfig } from './views/WorkflowConfig';
 import { isPreliminaryGatekeeper } from './views/workflowProfiles';
+import { useRouter } from './hooks/useRouter';
 
 type ViewType = 'DASHBOARD' | 'REVIEWS' | 'PLAN_DETAILS' | 'ANALYTICS' | 'USER_MANAGEMENT' | 'RECEPTION' | 'FINAL_APPROVAL' | 'SEARCH_ARCHIVE' | 'IT_DASHBOARD' | 'AUDIT_LOGS' | 'WORKFLOW_CONFIG';
 
+/** Map ViewType to a URL path */
+const VIEW_PATHS: Record<ViewType, string> = {
+  DASHBOARD: '/dashboard',
+  RECEPTION: '/reception',
+  PLAN_DETAILS: '/plan',
+  ANALYTICS: '/analytics',
+  USER_MANAGEMENT: '/users',
+  REVIEWS: '/reviews',
+  FINAL_APPROVAL: '/final-approval',
+  SEARCH_ARCHIVE: '/search',
+  IT_DASHBOARD: '/dashboard',
+  AUDIT_LOGS: '/audit-logs',
+  WORKFLOW_CONFIG: '/workflow-config',
+};
+
+/** Reverse map: URL path → ViewType */
+const PATH_VIEWS: Record<string, ViewType> = {
+  '/dashboard': 'DASHBOARD',
+  '/reception': 'RECEPTION',
+  '/plan': 'PLAN_DETAILS',
+  '/analytics': 'ANALYTICS',
+  '/users': 'USER_MANAGEMENT',
+  '/reviews': 'REVIEWS',
+  '/final-approval': 'FINAL_APPROVAL',
+  '/search': 'SEARCH_ARCHIVE',
+  '/audit-logs': 'AUDIT_LOGS',
+  '/workflow-config': 'WORKFLOW_CONFIG',
+};
+
 const NavItem: React.FC<{ icon: React.ReactNode; label: string; active?: boolean; onClick?: () => void }> = ({ icon, label, active, onClick }) => (
   <button
+    type="button"
     onClick={onClick}
     className={`flex items-center gap-4 w-full px-5 py-4 rounded-2xl transition-all duration-300 text-sm font-bold group ${active ? 'bg-white/10 text-white shadow-lg' : 'text-white/50 hover:text-white hover:bg-white/5'}`}
   >
@@ -52,8 +83,8 @@ const SidebarIcons = {
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [showLogin, setShowLogin] = useState(sessionStorage.getItem('pacs_show_login') === 'true');
-  const [currentView, setCurrentView] = useState<ViewType>('DASHBOARD');
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   /**
    * appKey is incremented on logout to force a full React tree remount,
    * clearing all component state and preventing session bleed between users.
@@ -61,6 +92,12 @@ export const App: React.FC = () => {
   const [appKey, setAppKey] = useState(0);
 
   const [justLoggedOut, setJustLoggedOut] = useState(false);
+
+  // Lightweight client-side router — maps ViewType to real browser URLs
+  const { path: currentPath, navigate: routerNavigate } = useRouter('/dashboard');
+
+  // Derive currentView from the current browser path
+  const currentView: ViewType = PATH_VIEWS[currentPath] ?? 'DASHBOARD';
 
   useEffect(() => {
     if (sessionStorage.getItem('pacs_show_login') === 'true' && !user) {
@@ -72,7 +109,6 @@ export const App: React.FC = () => {
   const handleLogout = () => {
     setAppKey(k => k + 1);
     setUser(null);
-    setCurrentView('DASHBOARD');
     setSelectedPlan(null);
     setShowLogin(true);
     setJustLoggedOut(true);
@@ -83,19 +119,19 @@ export const App: React.FC = () => {
 
   const handleViewPlan = (plan: any) => {
     setSelectedPlan(plan);
-    
+
     // Role-based redirection logic
     if (user?.role === 'RECEPTION') {
-      setCurrentView('RECEPTION');
+      navigate('RECEPTION');
     } else {
-      setCurrentView('PLAN_DETAILS');
+      navigate('PLAN_DETAILS', String(plan.id));
     }
   };
 
   const refreshSelectedPlan = async () => {
     if (!selectedPlan) return;
     try {
-      const updated = await api.getPlanDetails(selectedPlan.id);
+      const updated = await api.getPlanDetail(selectedPlan.id);
       setSelectedPlan(updated);
     } catch (err) {
       console.error("Failed to refresh plan details", err);
@@ -112,39 +148,39 @@ export const App: React.FC = () => {
           <InternalDashboard
             user={user}
             onViewPlan={handleViewPlan}
-            onNavigate={(view) => setCurrentView(view)}
+            onNavigate={(view) => navigate(view)}
           />
         );
       case 'RECEPTION':
-        return <ReceptionGateway 
+        return <ReceptionGateway
           user={user}
-          selectedPlanId={selectedPlan?.id} 
-          onBack={() => setCurrentView('DASHBOARD')} 
+          selectedPlanId={selectedPlan?.id}
+          onBack={() => navigate('DASHBOARD')}
         />
       case 'PLAN_DETAILS':
         if (user?.role === 'RECEPTION') {
-          return <ReceptionGateway 
+          return <ReceptionGateway
             user={user}
-            selectedPlanId={selectedPlan?.id} 
-            onBack={() => setCurrentView('DASHBOARD')} 
+            selectedPlanId={selectedPlan?.id}
+            onBack={() => navigate('DASHBOARD')}
           />
         }
 
-        const isPrelimDept = isPreliminaryGatekeeper(user?.department_name);
+        const isPrelimDept = isPreliminaryGatekeeper(user?.department_name, user?.role);
 
         if (selectedPlan?.status === 'PRELIMINARY_SUBMITTED' && isPrelimDept) {
-          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} />
+          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => navigate('DASHBOARD')} />
         }
 
         if (selectedPlan?.status === 'DRAFT' || selectedPlan?.status === 'PRELIMINARY_SUBMITTED' || user?.role === 'CLIENT') {
-          return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} onRefresh={refreshSelectedPlan} />
+          return <PlanDetails plan={selectedPlan} user={user} onBack={() => navigate('DASHBOARD')} onRefresh={refreshSelectedPlan} />
         } else {
           // Internal Workspace (Technical Review)
           const allowedTechnicalRoles = ['DEPT_OFFICER', 'DEPT_HEAD', 'ADMIN', 'FINAL_APPROVER'];
           if (!allowedTechnicalRoles.includes(user?.role || '')) {
-             return <PlanDetails plan={selectedPlan} user={user} onBack={() => setCurrentView('DASHBOARD')} onRefresh={refreshSelectedPlan} />
+            return <PlanDetails plan={selectedPlan} user={user} onBack={() => navigate('DASHBOARD')} onRefresh={refreshSelectedPlan} />
           }
-          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => setCurrentView('REVIEWS')} />
+          return <ReviewInterface plan={selectedPlan} user={user} onBack={() => navigate('REVIEWS')} />
         }
       case 'ANALYTICS':
         return <AnalyticsDashboard />;
@@ -199,10 +235,34 @@ export const App: React.FC = () => {
     );
   }
 
+  /**
+   * Navigate to a ViewType, optionally with a plan ID appended to the path.
+   * Updates the real browser URL via useRouter.
+   */
+  const navigate = (view: ViewType, planId?: string) => {
+    const basePath = VIEW_PATHS[view] ?? '/dashboard';
+    const path = planId ? `${basePath}/${planId}` : basePath;
+    routerNavigate(path);
+    setSidebarOpen(false);
+  };
+
+  const handleSearch = (_query: string) => {
+    navigate('SEARCH_ARCHIVE');
+  };
+
   return (
     <div key={appKey} className="flex h-screen bg-[#F9FAFB] overflow-hidden font-interface selection:bg-blue-100 selection:text-blue-900">
+      {/* Mobile sidebar backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar with BCC Branding */}
-      <aside className="w-72 bg-[#003366] text-white flex flex-col shrink-0 shadow-[10px_0_30px_rgba(0,0,0,0.1)] relative z-20">
+      <aside className={`fixed md:relative w-72 bg-[#003366] text-white flex flex-col shrink-0 shadow-[10px_0_30px_rgba(0,0,0,0.1)] z-40 md:z-20 h-full transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="p-8 border-b border-white/5 flex flex-col items-center gap-4 bg-white/5">
           <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center shadow-2xl p-1">
             <img src="/logo.png" alt="BCC" className="w-full h-full object-contain" />
@@ -216,37 +276,37 @@ export const App: React.FC = () => {
         <nav className="flex-1 p-6 space-y-2 overflow-y-auto">
           <NavItem
             active={currentView === 'DASHBOARD'}
-            onClick={() => setCurrentView('DASHBOARD')}
+            onClick={() => navigate('DASHBOARD')}
             label={role === 'ADMIN' ? 'System Governance' : 'Dashboard'}
             icon={SidebarIcons.Dashboard}
           />
 
           {role === 'RECEPTION' && (
-            <NavItem active={currentView === 'RECEPTION'} onClick={() => setCurrentView('RECEPTION')} label="Reception Gateway" icon={SidebarIcons.Reception} />
+            <NavItem active={currentView === 'RECEPTION'} onClick={() => navigate('RECEPTION')} label="Reception Gateway" icon={SidebarIcons.Reception} />
           )}
 
           {(role === 'DEPT_OFFICER' || role === 'DEPT_HEAD') && (
-            <NavItem active={currentView === 'REVIEWS'} onClick={() => setCurrentView('REVIEWS')} label="Technical Reviews" icon={SidebarIcons.Reviews} />
+            <NavItem active={currentView === 'REVIEWS'} onClick={() => navigate('REVIEWS')} label="Technical Reviews" icon={SidebarIcons.Reviews} />
           )}
 
           {(role === 'FINAL_APPROVER') && (
-            <NavItem active={currentView === 'FINAL_APPROVAL'} onClick={() => setCurrentView('FINAL_APPROVAL')} label="Final Signature" icon={SidebarIcons.Seal} />
+            <NavItem active={currentView === 'FINAL_APPROVAL'} onClick={() => navigate('FINAL_APPROVAL')} label="Final Signature" icon={SidebarIcons.Seal} />
           )}
 
           {(role === 'DEPT_HEAD' || role === 'FINAL_APPROVER') && (
-            <NavItem active={currentView === 'ANALYTICS'} onClick={() => setCurrentView('ANALYTICS')} label="Executive Analytics" icon={SidebarIcons.Analytics} />
+            <NavItem active={currentView === 'ANALYTICS'} onClick={() => navigate('ANALYTICS')} label="Executive Analytics" icon={SidebarIcons.Analytics} />
           )}
 
           {(role === 'ADMIN') && (
             <>
-              <NavItem active={currentView === 'USER_MANAGEMENT'} onClick={() => setCurrentView('USER_MANAGEMENT')} label="User Administration" icon={SidebarIcons.Users} />
-              <NavItem active={currentView === 'WORKFLOW_CONFIG'} onClick={() => setCurrentView('WORKFLOW_CONFIG')} label="Workflow Config" icon={SidebarIcons.Settings} />
-              <NavItem active={currentView === 'AUDIT_LOGS'} onClick={() => setCurrentView('AUDIT_LOGS')} label="System Audit Logs" icon={SidebarIcons.AuditLogs} />
+              <NavItem active={currentView === 'USER_MANAGEMENT'} onClick={() => navigate('USER_MANAGEMENT')} label="User Administration" icon={SidebarIcons.Users} />
+              <NavItem active={currentView === 'WORKFLOW_CONFIG'} onClick={() => navigate('WORKFLOW_CONFIG')} label="Workflow Config" icon={SidebarIcons.Settings} />
+              <NavItem active={currentView === 'AUDIT_LOGS'} onClick={() => navigate('AUDIT_LOGS')} label="System Audit Logs" icon={SidebarIcons.AuditLogs} />
             </>
           )}
 
           <div className="pt-6 mt-6 border-t border-white/5">
-            <NavItem active={currentView === 'SEARCH_ARCHIVE'} onClick={() => setCurrentView('SEARCH_ARCHIVE')} label="Search Archive" icon={SidebarIcons.Search} />
+            <NavItem active={currentView === 'SEARCH_ARCHIVE'} onClick={() => navigate('SEARCH_ARCHIVE')} label="Search Archive" icon={SidebarIcons.Search} />
           </div>
         </nav>
 
@@ -265,7 +325,12 @@ export const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0">
-        <Header user={user} onLogout={handleLogout} />
+        <Header
+          user={user}
+          onLogout={handleLogout}
+          onMenuToggle={() => setSidebarOpen(o => !o)}
+          onSearch={handleSearch}
+        />
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
           <div className="max-w-7xl mx-auto h-full">
             {renderContent()}

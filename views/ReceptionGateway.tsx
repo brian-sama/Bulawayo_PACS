@@ -47,10 +47,11 @@ export const ReceptionGateway: React.FC<ReceptionGatewayProps> = ({ user, select
     const [documentActionBusy,   setDocumentActionBusy]   = useState<number | null>(null);
 
     const loadPlans = async () => {
+        setLoading(true);
         try {
             const data = await api.getPlans();
             // Sort by latest first (created_at descending)
-            const sorted = [...data].sort((a, b) => 
+            const sorted = [...data].sort((a, b) =>
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             );
             setPlans(sorted.filter((p: any) => p.status === 'PRELIMINARY_SUBMITTED'));
